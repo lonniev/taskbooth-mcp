@@ -1,0 +1,28 @@
+# CODEOWNERS — the human gate for the agentic pipeline.
+#
+# Files covered here require @lonniev's review before merge (enforced by branch
+# protection: "Require review from Code Owners"). Files left UNCOVERED are eligible for
+# path-gated auto-merge once CI is green and QA applies qa/pass.
+#
+# The catch-all comes first and the carve-outs come after it, because CODEOWNERS is
+# LAST-MATCH-WINS. Default-deny, then carve out.
+
+# Everything needs review …
+* @lonniev
+
+# … except the paths the pipeline is trusted to land on its own. These match
+# auto-merge.yml's low-risk allowlist, so what CODEOWNERS releases is exactly what
+# auto-merge will take.
+/tests/
+*.md
+
+# WHAT A PLAUSIBLE EDIT COULD BREAK HERE: this Operator directs other people's money.
+# It never holds the sats, but it tells a purchaser's wallet whom to pay and how much.
+# Review with that in mind:
+# - the payout: the amount paid must be exactly the sats the final grade earns under the
+#   signed rubric, the invoice amount must be checked before paying, and a retry must look
+#   up the earlier payment hash first so nothing is paid twice;
+# - the NWC connection secret is a spending credential: vaulted, never logged, never returned;
+# - the role gate on every tool: only the purchaser (or a delegate) grades, only the named
+#   tie-breaker decides an appeal, and only an npub in a task's audience may claim it;
+# - input validation on npubs, amounts and Lightning addresses: tool arguments are adversarial.

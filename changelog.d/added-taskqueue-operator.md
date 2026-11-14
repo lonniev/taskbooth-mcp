@@ -1,0 +1,1 @@
+- Task Queue, a Tollbooth DPYC Operator where work is posted with a signed rubric and paid in sats after it is graded. This first version serves the standard DPYC tools only, under the `taskqueue_` prefix, so the service can be stood up on Horizon and adopted before its own tools arrive.
