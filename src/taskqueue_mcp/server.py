@@ -28,9 +28,18 @@ from tollbooth.credential_validators import validate_btcpay_creds
 from tollbooth.params import PatronNpub
 from tollbooth.properties import PropertySpec
 from tollbooth.runtime import OperatorRuntime, register_standard_tools
-from tollbooth.tool_identity import CREATES, DELETES, READS, STANDARD_IDENTITIES, WRITES, WRITES_REMOTE, ToolIdentity
+from tollbooth.tool_identity import (
+    CREATES,
+    DELETES,
+    READS,
+    READS_REMOTE,
+    STANDARD_IDENTITIES,
+    WRITES,
+    WRITES_REMOTE,
+    ToolIdentity,
+)
 
-from taskqueue_mcp import __version__, feed, payout
+from taskqueue_mcp import __version__, feed, payout, price
 from taskqueue_mcp.lifecycle import Action, State
 from taskqueue_mcp.store import NotYours, TaskStore
 
@@ -107,6 +116,7 @@ REQUEST_PAYOUT_UUID = "5969f5f9-ed64-4b15-ad4a-015d8192b960"
 CONFIRM_PAID_UUID = "fc620f48-1061-41ff-8d73-8fb41d627617"
 SAVE_RUBRIC_TEMPLATE_UUID = "ab2db4cf-915f-4979-a1b1-26e72abfcfbf"
 LIST_RUBRIC_TEMPLATES_UUID = "a9114167-0545-4417-94b8-0458b9c4dbae"
+BTC_PRICE_UUID = "1d9f26c9-7883-45b0-b626-9b5e66c38a44"
 CALENDAR_PUBLISH_UUID = "d58d1de3-9455-46cf-ad9f-cc63f063e0de"
 CALENDAR_FETCH_UUID = "e91b5e42-a7ce-4a07-a7a3-2948f25fb534"
 CALENDAR_LIST_UUID = "a2a11111-6c18-4c91-a80e-dd39385321b5"
@@ -164,6 +174,8 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "The calendar feeds the caller keeps, and how often each is read"),
     _identity(CALENDAR_REVOKE_UUID, "calendar_revoke", "write", "Revoke a calendar feed", DELETES,
               "Stop a calendar feed so its token opens nothing"),
+    _identity(BTC_PRICE_UUID, "btc_price", "free", "Bitcoin's price", READS_REMOTE,
+              "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
 ]
 
 #: What a patron may set about themselves here (taskqueue_set_my_property).
@@ -615,6 +627,27 @@ async def calendar_revoke(token: str, npub: PatronNpub = "") -> dict[str, Any]:
     if not await db.revoke_feed(runtime.resolve_npub(npub), token):
         raise ValueError("No calendar feed with that token is yours.")
     return {"ok": True}
+
+
+
+# ---------------------------------------------------------------------------
+# Bitcoin's price
+# ---------------------------------------------------------------------------
+
+
+@tool
+@runtime.paid_tool(BTC_PRICE_UUID)
+async def btc_price(fiat: str = "USD", years: int = 4) -> dict[str, Any]:
+    """What one bitcoin costs today, and on this day in each of the last few years.
+
+    Read from mempool.space and passed on with the time each price was observed.
+    A reading is reused for up to an hour. Divide by 100,000,000 for the price of one sat.
+
+    Args:
+        fiat: USD, EUR, GBP, CAD, CHF, AUD or JPY.
+        years: How many earlier years to include, 0 to 10.
+    """
+    return {"ok": True, **await price.reading(fiat, years)}
 
 
 if __name__ == "__main__":
