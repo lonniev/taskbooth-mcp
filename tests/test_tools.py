@@ -343,25 +343,92 @@ async def test_a_performer_whose_address_has_gone_is_told_so(billing, queue, wal
 
 
 # ---------------------------------------------------------------------------
+# Payout by the performer's own invoice
+# ---------------------------------------------------------------------------
+
+
+async def test_a_performer_with_no_address_hands_in_their_own_invoice(billing, queue, wallets):
+    wallets["addresses"][CHILD] = ""
+    task = await post()
+    await owed(task)
+    told = await call("request_payout", task_id=task, npub=PARENT)
+    assert not told["success"] and "exactly 800 sats" in told["error"]
+
+    mine = make_invoice(800, preimage="ab" * 32)
+    handed = (await call("request_payout", task_id=task, invoice=mine, npub=CHILD))["payout"]
+    assert handed["invoice"] == mine and handed["payment_hash"] == payment_hash_of("ab" * 32)
+    assert (await call("request_payout", task_id=task, npub=PARENT))["payout"]["invoice"] == mine
+    assert wallets["asked"] == []
+    assert (await call("confirm_paid", task_id=task, npub=CHILD))["task"]["state"] == "paid"
+
+
+@pytest.mark.parametrize("shown", ["lightning:{}", "LIGHTNING:{}", "  {}\n"])
+async def test_an_invoice_is_taken_as_a_wallet_shows_it(billing, queue, wallets, shown):
+    task = await post()
+    await owed(task)
+    mine = make_invoice(800)
+    handed = await call("request_payout", task_id=task, invoice=shown.format(mine), npub=CHILD)
+    assert handed["payout"]["invoice"] == mine
+    upper = await call("request_payout", task_id=task, invoice=mine.upper(), npub=CHILD)
+    assert upper["payout"]["invoice"] == mine
+
+
+async def test_the_performers_invoice_replaces_one_fetched_from_their_address(billing, queue, wallets):
+    task = await post()
+    await owed(task)
+    fetched = (await call("request_payout", task_id=task, npub=PARENT))["payout"]["invoice"]
+    mine = make_invoice(800, preimage="cd" * 32)
+    assert mine != fetched
+    await call("request_payout", task_id=task, invoice=mine, npub=CHILD)
+    assert (await call("request_payout", task_id=task, npub=PARENT))["payout"]["invoice"] == mine
+
+
+@pytest.mark.parametrize("sats", [801, 8000, None])
+async def test_a_performers_invoice_for_any_other_amount_is_refused(billing, queue, wallets, sats):
+    wallets["addresses"][CHILD] = ""
+    task = await post()
+    await owed(task)
+    refused = await call("request_payout", task_id=task, invoice=make_invoice(sats), npub=CHILD)
+    assert not refused["success"] and "different amount" in refused["error"]
+    assert await queue.payout(task) is None
+
+
+async def test_a_performers_invoice_that_is_not_one_or_has_expired_is_refused(billing, queue, wallets):
+    task = await post()
+    await owed(task)
+    for bad, why in (("hello", "not a Lightning invoice"), ("lnbc-not-really", "no usable invoice"),
+                     ("lno1qcp4256ypq", "no usable invoice"),
+                     (make_invoice(800, created_at=int(time.time()) - 500, expiry=600), "already expired")):
+        refused = await call("request_payout", task_id=task, invoice=bad, npub=CHILD)
+        assert not refused["success"] and why in refused["error"], bad
+    assert await queue.payout(task) is None
+
+
+async def test_only_the_performer_hands_in_an_invoice(billing, queue, wallets):
+    task = await post()
+    await owed(task)
+    for who in (PARENT, OTHER_PARENT, SIBLING, STRANGER):
+        refused = await call("request_payout", task_id=task, invoice=make_invoice(800), npub=who)
+        assert not refused["success"], who
+    assert await queue.payout(task) is None
+
+
+async def test_an_invoice_is_not_taken_before_the_task_is_owed(billing, queue, wallets):
+    task = await post()
+    await done(task)
+    refused = await call("request_payout", task_id=task, invoice=make_invoice(800), npub=CHILD)
+    assert not refused["success"] and "owed" in refused["error"]
+
+
+# ---------------------------------------------------------------------------
 # Claiming
 # ---------------------------------------------------------------------------
 
 
-async def test_a_performer_with_no_payout_address_is_told_so_at_claim_time(billing, queue, wallets):
+async def test_a_performer_with_no_payout_address_may_still_claim(billing, queue, wallets):
     task = await post()
     wallets["addresses"][CHILD] = ""
-    refused = await call("claim_task", task_id=task, npub=CHILD)
-    assert not refused["success"] and "Set your payout_address first" in refused["error"]
-    assert billing["rollback"] == 1
-    wallets["addresses"][CHILD] = "not an address"
-    assert not (await call("claim_task", task_id=task, npub=CHILD))["success"]
-    assert (await call("get_task", task_id=task, npub=PARENT))["task"]["state"] == "posted"
-
-
-async def test_a_task_that_earns_nothing_needs_no_payout_address(billing, queue, wallets):
-    task = await post(rubric={"grades": [{"name": "Done", "sats": 0}]})
-    wallets["addresses"][CHILD] = ""
-    assert (await call("claim_task", task_id=task, npub=CHILD))["ok"]
+    assert (await call("claim_task", task_id=task, npub=CHILD))["task"]["state"] == "claimed"
 
 
 async def test_someone_outside_the_audience_can_neither_see_nor_claim(billing, queue, wallets):
