@@ -28,6 +28,7 @@ import secrets
 import time
 from typing import Any
 
+from taskqueue_mcp import feed
 from taskqueue_mcp.lifecycle import (
     EXPIRED,
     Action,
@@ -184,6 +185,10 @@ class TaskStore:
              "created_at BIGINT NOT NULL)"),
             (f"CREATE INDEX IF NOT EXISTS idx_taskqueue_templates_owner "
              f"ON {self._t('taskqueue_rubric_templates')}(owner_npub)"),
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_feeds')} ("
+             "token_key TEXT PRIMARY KEY, owner_npub TEXT NOT NULL, created_at BIGINT NOT NULL, "
+             "fetches INTEGER NOT NULL, last_fetch BIGINT, data_enc TEXT NOT NULL)"),
+            f"CREATE INDEX IF NOT EXISTS idx_taskqueue_feeds_owner ON {self._t('taskqueue_feeds')}(owner_npub)",
         ):
             await self._neon._execute(sql, [])
 
@@ -624,3 +629,53 @@ class TaskStore:
         )
         return [{"template_id": r["template_id"], "created_at": int(r["created_at"]), **self._open(r["data_enc"])}
                 for r in rows]
+
+    # -- calendar feeds ------------------------------------------------------
+
+    async def publish_feed(self, owner: str, name: str, zone: str, at: int | None = None) -> dict[str, Any]:
+        """Mint a calendar feed for ``owner``. The token is returned once here and kept sealed.
+
+        Raises:
+            ValueError: the name or zone is unusable, or the owner already keeps the most feeds allowed.
+        """
+        owner = checked_npub(owner, "owner")
+        name = _text(name, "calendar name", 80, required=True)
+        zone = feed.checked_zone(zone)
+        if len(await self.feeds_of(owner)) >= feed.MAX_FEEDS:
+            raise ValueError(f"You keep {feed.MAX_FEEDS} calendar feeds already; revoke one first.")
+        token = feed.new_token()
+        at = int(time.time()) if at is None else at
+        await self._neon._execute(
+            f"INSERT INTO {self._t('taskqueue_feeds')} (token_key, owner_npub, created_at, fetches, last_fetch, data_enc) "
+            "VALUES ($1, $2, $3, 0, NULL, $4)",
+            [feed.token_key(token), owner, at, self._seal({"token": token, "name": name, "zone": zone})],
+        )
+        return {"token": token, "name": name, "zone": zone, "created_at": at, "fetches": 0, "last_fetch": None}
+
+    async def feeds_of(self, owner: str) -> list[dict[str, Any]]:
+        rows = await self._rows(
+            f"SELECT created_at, fetches, last_fetch, data_enc FROM {self._t('taskqueue_feeds')} "
+            "WHERE owner_npub = $1 ORDER BY created_at, token_key",
+            [owner],
+        )
+        return [{**self._open(r["data_enc"]), "created_at": int(r["created_at"]), "fetches": int(r["fetches"]),
+                 "last_fetch": int(r["last_fetch"]) if r["last_fetch"] is not None else None} for r in rows]
+
+    async def feed_for(self, token: str, at: int | None = None) -> dict[str, Any] | None:
+        """Whose feed a token opens, with its name and zone, counting the read. ``None`` when it opens nothing."""
+        rows = await self._rows(
+            f"UPDATE {self._t('taskqueue_feeds')} SET fetches = fetches + 1, last_fetch = $1 "
+            "WHERE token_key = $2 RETURNING owner_npub, data_enc",
+            [int(time.time()) if at is None else at, feed.token_key(feed.checked_token(token))],
+        )
+        if not rows:
+            return None
+        return {"owner": rows[0]["owner_npub"], **self._open(rows[0]["data_enc"])}
+
+    async def revoke_feed(self, owner: str, token: str) -> bool:
+        """Stop a feed of the owner's. True when one was stopped."""
+        gone = await self._rows(
+            f"DELETE FROM {self._t('taskqueue_feeds')} WHERE token_key = $1 AND owner_npub = $2 RETURNING token_key",
+            [feed.token_key(feed.checked_token(token)), owner],
+        )
+        return bool(gone)
