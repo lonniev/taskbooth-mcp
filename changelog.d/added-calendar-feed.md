@@ -1,0 +1,1 @@
+- Calendar feeds: `taskqueue_calendar_publish` mints a feed of your tasks reached by an unguessable token, `taskqueue_calendar_fetch` returns it as iCalendar for the site that serves it, and `taskqueue_calendar_list` and `taskqueue_calendar_revoke` manage it. A feed names nobody and carries no npub. It is built on each read, with each task on its due day in the time zone given.

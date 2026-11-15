@@ -481,3 +481,124 @@ def test_a_payout_address_is_a_lightning_address():
     for bad in ("", "kid", "kid@", "@wallet.example", "kid@wallet", "a b@wallet.example", "a@b@c.example", None, 7):
         with pytest.raises(ValueError):
             payout.checked_address(bad)
+
+
+# ---------------------------------------------------------------------------
+# Calendar feeds
+# ---------------------------------------------------------------------------
+
+ZONE = "America/New_York"
+
+
+@pytest.fixture
+def anyone(billing):
+    """A calendar app is nobody: it carries a token and no npub."""
+    billing["proven"].add("")
+    return billing
+
+
+async def feed_of(who, **over):
+    args = {"name": "Sam's chores", "time_zone": ZONE, "npub": who} | over
+    return await call("calendar_publish", **args)
+
+
+async def test_a_feed_holds_the_tasks_of_whoever_published_it(anyone, queue, wallets):
+    await post(title="🧹 Sweep the kitchen floor", description="After supper, under the table")
+    token = (await feed_of(CHILD))["feed"]["token"]
+    got = await call("calendar_fetch", token=token)
+    assert got["ok"] and got["count"] == 1 and got["name"] == "Sam's chores"
+    ics = got["ics"]
+    assert ics.startswith("BEGIN:VCALENDAR\r\n") and ics.endswith("END:VCALENDAR\r\n")
+    assert "SUMMARY:🧹 Sweep the kitchen floor" in ics
+    assert "After supper\\, under the table\\nEarns up to 2000 sats." in ics.replace("\r\n ", "")
+    assert "X-WR-CALNAME:Sam's chores" in ics
+
+
+async def test_a_feed_names_nobody(anyone, queue, wallets):
+    task = await post()
+    await done(task)
+    token = (await feed_of(CHILD))["feed"]["token"]
+    ics = (await call("calendar_fetch", token=token))["ics"].replace("\r\n ", "")
+    for npub in (PARENT, CHILD, SIBLING, OTHER_PARENT):
+        assert npub not in ics
+    assert "npub1" not in ics and token not in ics
+
+
+async def test_a_task_falls_on_its_due_day_where_its_people_live(anyone, queue, wallets):
+    # 23:59:59 on 20 November in New York is already the 21st in UTC.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    due = int(datetime(2030, 11, 20, 23, 59, 59, tzinfo=ZoneInfo(ZONE)).timestamp())
+    await post(needed_by=due)
+    here = (await feed_of(CHILD))["feed"]["token"]
+    assert "DTSTART;VALUE=DATE:20301120" in (await call("calendar_fetch", token=here))["ics"]
+    utc = (await feed_of(CHILD, time_zone="UTC"))["feed"]["token"]
+    assert "DTSTART;VALUE=DATE:20301121" in (await call("calendar_fetch", token=utc))["ics"]
+
+
+async def test_a_feed_follows_the_tasks_as_they_change(anyone, queue, wallets):
+    task = await post()
+    token = (await feed_of(CHILD))["feed"]["token"]
+    assert "SUMMARY:Clean your room" in (await call("calendar_fetch", token=token))["ics"]
+    await owed(task)
+    ics = (await call("calendar_fetch", token=token))["ics"]
+    assert "SUMMARY:✓ Clean your room" in ics and "Earned 800 sats." in ics
+    gone = await post(title="Rake the leaves")
+    await call("withdraw_task", task_id=gone, npub=PARENT)
+    assert "Rake the leaves" not in (await call("calendar_fetch", token=(await feed_of(PARENT))["feed"]["token"]))["ics"]
+
+
+async def test_an_events_uid_is_the_same_on_every_read(anyone, queue, wallets):
+    await post()
+    token = (await feed_of(CHILD))["feed"]["token"]
+    uid = lambda ics: [line for line in ics.split("\r\n") if line.startswith("UID:")]
+    first, again = (await call("calendar_fetch", token=token))["ics"], (await call("calendar_fetch", token=token))["ics"]
+    assert uid(first) == uid(again) and len(uid(first)) == 1
+
+
+@pytest.mark.parametrize("token", ["", "nope", "g" * 32, "ab" * 15, "ab" * 17, "0" * 32])
+async def test_a_token_that_opens_nothing_is_refused(anyone, queue, wallets, token):
+    await post()
+    await feed_of(CHILD)
+    refused = await call("calendar_fetch", token=token)
+    assert not refused["success"] and "not a calendar feed" in refused["error"]
+
+
+async def test_the_owner_sees_their_feeds_and_how_often_each_is_read(anyone, queue, wallets):
+    token = (await feed_of(CHILD))["feed"]["token"]
+    await feed_of(SIBLING, name="Mine")
+    await call("calendar_fetch", token=token)
+    await call("calendar_fetch", token=token)
+    feeds = (await call("calendar_list", npub=CHILD))["feeds"]
+    assert [(f["token"], f["name"], f["zone"], f["fetches"]) for f in feeds] == [(token, "Sam's chores", ZONE, 2)]
+    assert feeds[0]["last_fetch"] is not None
+
+
+async def test_a_revoked_feed_opens_nothing_and_only_its_owner_revokes_it(anyone, queue, wallets):
+    await post()
+    token = (await feed_of(CHILD))["feed"]["token"]
+    assert not (await call("calendar_revoke", token=token, npub=SIBLING))["success"]
+    assert (await call("calendar_fetch", token=token))["ok"]
+    assert (await call("calendar_revoke", token=token, npub=CHILD))["ok"]
+    assert not (await call("calendar_fetch", token=token))["success"]
+    assert (await call("calendar_list", npub=CHILD))["feeds"] == []
+    assert not (await call("calendar_revoke", token=token, npub=CHILD))["success"]
+
+
+async def test_the_token_is_stored_sealed_and_looked_up_by_its_hash(anyone, queue, wallets):
+    token = (await feed_of(CHILD))["feed"]["token"]
+    rows = await queue._rows(f"SELECT token_key, data_enc FROM {queue._t('taskqueue_feeds')}", [])
+    assert len(rows) == 1 and token not in rows[0]["token_key"] and token not in rows[0]["data_enc"]
+
+
+@pytest.mark.parametrize("over", [{"time_zone": "Mars/Olympus"}, {"time_zone": ""}, {"name": ""}, {"name": "x" * 81}])
+async def test_a_feed_needs_a_name_and_a_real_time_zone(anyone, queue, wallets, over):
+    assert not (await feed_of(CHILD, **over))["success"]
+    assert (await call("calendar_list", npub=CHILD))["feeds"] == []
+
+
+async def test_a_person_keeps_a_handful_of_feeds_at_most(anyone, queue, wallets):
+    for i in range(5):
+        assert (await feed_of(CHILD, name=f"Feed {i}"))["ok"]
+    refused = await feed_of(CHILD, name="One more")
+    assert not refused["success"] and "revoke one first" in refused["error"]

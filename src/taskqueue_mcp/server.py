@@ -18,6 +18,7 @@ Run locally:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from fastmcp import FastMCP
@@ -27,9 +28,9 @@ from tollbooth.credential_validators import validate_btcpay_creds
 from tollbooth.params import PatronNpub
 from tollbooth.properties import PropertySpec
 from tollbooth.runtime import OperatorRuntime, register_standard_tools
-from tollbooth.tool_identity import CREATES, READS, STANDARD_IDENTITIES, WRITES, WRITES_REMOTE, ToolIdentity
+from tollbooth.tool_identity import CREATES, DELETES, READS, STANDARD_IDENTITIES, WRITES, WRITES_REMOTE, ToolIdentity
 
-from taskqueue_mcp import __version__, payout
+from taskqueue_mcp import __version__, feed, payout
 from taskqueue_mcp.lifecycle import Action, State
 from taskqueue_mcp.store import NotYours, TaskStore
 
@@ -66,6 +67,8 @@ mcp = FastMCP(
         "taskqueue_set_my_property) when they have one. A performer without one makes an "
         "invoice for that amount in their own wallet and passes it as invoice.\n"
         "7. The performer calls taskqueue_confirm_paid when the sats arrive.\n\n"
+        "taskqueue_calendar_publish mints a calendar feed of your tasks for a phone's "
+        "calendar app; taskqueue_calendar_list and taskqueue_calendar_revoke manage it.\n\n"
         "taskqueue_list_tasks shows every task you have a part in; taskqueue_get_task "
         "and taskqueue_task_history show one. A task past its needed-by time and "
         "still unclaimed reads as expired. Times are Unix seconds. One npub may hold "
@@ -104,6 +107,10 @@ REQUEST_PAYOUT_UUID = "5969f5f9-ed64-4b15-ad4a-015d8192b960"
 CONFIRM_PAID_UUID = "fc620f48-1061-41ff-8d73-8fb41d627617"
 SAVE_RUBRIC_TEMPLATE_UUID = "ab2db4cf-915f-4979-a1b1-26e72abfcfbf"
 LIST_RUBRIC_TEMPLATES_UUID = "a9114167-0545-4417-94b8-0458b9c4dbae"
+CALENDAR_PUBLISH_UUID = "d58d1de3-9455-46cf-ad9f-cc63f063e0de"
+CALENDAR_FETCH_UUID = "e91b5e42-a7ce-4a07-a7a3-2948f25fb534"
+CALENDAR_LIST_UUID = "a2a11111-6c18-4c91-a80e-dd39385321b5"
+CALENDAR_REVOKE_UUID = "e0fe233b-2b79-4902-8429-f956b0d766dc"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -149,6 +156,14 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Keep a rubric to reuse on later tasks"),
     _identity(LIST_RUBRIC_TEMPLATES_UUID, "list_rubric_templates", "read", "List rubric templates", READS,
               "The rubrics the caller has kept"),
+    _identity(CALENDAR_PUBLISH_UUID, "calendar_publish", "write", "Publish a calendar feed", CREATES,
+              "Mint a calendar feed of the caller's tasks, reached by an unguessable token"),
+    _identity(CALENDAR_FETCH_UUID, "calendar_fetch", "free", "Fetch a calendar feed", READS,
+              "Read a calendar feed by its token, for the site that serves it"),
+    _identity(CALENDAR_LIST_UUID, "calendar_list", "read", "List calendar feeds", READS,
+              "The calendar feeds the caller keeps, and how often each is read"),
+    _identity(CALENDAR_REVOKE_UUID, "calendar_revoke", "write", "Revoke a calendar feed", DELETES,
+              "Stop a calendar feed so its token opens nothing"),
 ]
 
 #: What a patron may set about themselves here (taskqueue_set_my_property).
@@ -534,6 +549,72 @@ async def save_rubric_template(
 async def list_rubric_templates(npub: PatronNpub = "") -> dict[str, Any]:
     """The rubrics you have kept."""
     return {"ok": True, "templates": await (await store()).templates_of(runtime.resolve_npub(npub))}
+
+
+
+# ---------------------------------------------------------------------------
+# Calendar feeds
+# ---------------------------------------------------------------------------
+
+
+@tool
+@runtime.paid_tool(CALENDAR_PUBLISH_UUID)
+async def calendar_publish(name: str, time_zone: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Mint a calendar feed of your tasks that a phone or computer can subscribe to.
+
+    Returns a token. The site you use serves the feed at an address built from
+    it. The token is the feed's only lock: anyone who has the address can read
+    your tasks' titles, details, due days and rewards. The feed names nobody
+    and carries no npub. taskqueue_calendar_revoke stops it.
+
+    Args:
+        name: What the calendar is called in the calendar app, e.g. "Sam's chores".
+        time_zone: Your IANA time zone, e.g. "America/New_York". It decides which day a task falls on.
+    """
+    db = await store()
+    return {"ok": True, "feed": await db.publish_feed(runtime.resolve_npub(npub), name, time_zone)}
+
+
+@tool
+@runtime.paid_tool(CALENDAR_FETCH_UUID)
+async def calendar_fetch(token: str) -> dict[str, Any]:
+    """Read a calendar feed by its token, as iCalendar text.
+
+    For the site that serves the feed's address: a calendar app speaks HTTP and
+    has nowhere to carry an npub proof, so the token is the credential. The
+    feed is built now, from the tasks as they stand.
+
+    Args:
+        token: The feed token from taskqueue_calendar_publish.
+    """
+    db = await store()
+    found = await db.feed_for(token)
+    if found is None:
+        raise ValueError("That is not a calendar feed.")
+    tasks = await db.tasks_of(found["owner"])
+    ics = feed.chores_ics(tasks, name=found["name"], zone=found["zone"], token=found["token"], at=int(time.time()))
+    return {"ok": True, "ics": ics, "name": found["name"], "count": ics.count("BEGIN:VEVENT")}
+
+
+@tool
+@runtime.paid_tool(CALENDAR_LIST_UUID)
+async def calendar_list(npub: PatronNpub = "") -> dict[str, Any]:
+    """The calendar feeds you keep, with each one's token and how often it has been read."""
+    return {"ok": True, "feeds": await (await store()).feeds_of(runtime.resolve_npub(npub))}
+
+
+@tool
+@runtime.paid_tool(CALENDAR_REVOKE_UUID)
+async def calendar_revoke(token: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Stop one of your calendar feeds. Its address opens nothing afterwards.
+
+    Args:
+        token: The feed token to stop.
+    """
+    db = await store()
+    if not await db.revoke_feed(runtime.resolve_npub(npub), token):
+        raise ValueError("No calendar feed with that token is yours.")
+    return {"ok": True}
 
 
 if __name__ == "__main__":
