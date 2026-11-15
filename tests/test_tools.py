@@ -551,7 +551,7 @@ async def test_a_feed_follows_the_tasks_as_they_change(anyone, queue, wallets):
 async def test_an_events_uid_is_the_same_on_every_read(anyone, queue, wallets):
     await post()
     token = (await feed_of(CHILD))["feed"]["token"]
-    uid = lambda ics: [line for line in ics.split("\r\n") if line.startswith("UID:")]  # noqa: E731
+    uid = lambda ics: [line for line in ics.split("\r\n") if line.startswith("UID:")]
     first, again = (await call("calendar_fetch", token=token))["ics"], (await call("calendar_fetch", token=token))["ics"]
     assert uid(first) == uid(again) and len(uid(first)) == 1
 
