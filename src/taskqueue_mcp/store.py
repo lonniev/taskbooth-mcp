@@ -500,6 +500,48 @@ class TaskStore:
                  "occurrence", "rolled", "org_id", "project_id", "version", "created_at", "updated_at"}
         return [k for k in task if k not in plain]
 
+    async def set_assessor(
+        self, purchaser: str, task_id: str, assessor: str, on: bool, at: int | None = None
+    ) -> dict[str, Any]:
+        """Let another npub grade this task for the purchaser, or stop letting them.
+
+        Only the purchaser delegates, and the purchaser always remains an assessor.
+        """
+        at = int(time.time()) if at is None else at
+        task = await self._load(task_id)
+        if task is None or purchaser != task["purchaser"]:
+            raise NotYours(f"No task {task_id!r} is yours to delegate.")
+        assessor = checked_npub(assessor, "assessor")
+        if assessor == purchaser and not on:
+            raise ValueError("The purchaser always grades their own task.")
+        wanted = sorted(({*task["assessors"]} | {assessor}) if on else ({*task["assessors"]} - {assessor}))
+        if len(wanted) > MAX_PEOPLE:
+            raise ValueError(f"A task names at most {MAX_PEOPLE} assessors.")
+        data = {k: task[k] for k in self._sealed_keys(task)} | {"assessors": wanted}
+        moved = await self._rows(
+            f"UPDATE {self._t('taskqueue_tasks')} SET data_enc = $1, version = version + 1, updated_at = $2 "
+            "WHERE task_id = $3 AND version = $4 RETURNING version",
+            [self._seal(data), at, task_id, task["version"]],
+        )
+        if not moved:
+            raise ValueError("Someone else changed this task first. Read it again.")
+        if on:
+            await self._neon._execute(
+                f"INSERT INTO {self._t('taskqueue_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
+                "ON CONFLICT (task_id, npub, role) DO NOTHING",
+                [task_id, assessor, Role.ASSESSOR.value],
+            )
+        else:
+            await self._neon._execute(
+                f"DELETE FROM {self._t('taskqueue_people')} WHERE task_id = $1 AND npub = $2 AND role = $3",
+                [task_id, assessor, Role.ASSESSOR.value],
+            )
+        await self._record(
+            task_id, task["version"] + 1, at, purchaser, "delegate" if on else "undelegate",
+            task["state"], task["state"], {"assessor": assessor},
+        )
+        return await self.get(purchaser, task_id, at)
+
     # -- recurrence ----------------------------------------------------------
 
     @staticmethod
