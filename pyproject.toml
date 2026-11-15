@@ -33,7 +33,9 @@ where = ["src"]
 line-length = 120
 
 [tool.ruff.lint]
-ignore = ["E501"]
+# TRY004: a refusal is a ValueError here whatever was wrong with the input, so a
+# tool has one exception to turn into a sentence for the caller.
+ignore = ["E501", "TRY004"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
