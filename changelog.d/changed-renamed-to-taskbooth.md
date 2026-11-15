@@ -1,0 +1,2 @@
+- This Operator is now **Task Booth** (`taskbooth-mcp`). Its tools are `taskbooth_…`, its Python package is `taskbooth_mcp`, and its tables are renamed in place on first start, rows and all. Prices carry over: they are kept by tool ID.
+- `assets/og-image.png`: a share image for listings.

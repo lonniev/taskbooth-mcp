@@ -20,8 +20,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tollbooth import ical
 
-PRODID = "-//Tollbooth DPYC//Task Queue//EN"
-UID_DOMAIN = "taskqueue.tollbooth-dpyc.com"
+PRODID = "-//Tollbooth DPYC//Task Booth//EN"
+UID_DOMAIN = "taskbooth.tollbooth-dpyc.com"
 
 #: Feeds one person may keep at once.
 MAX_FEEDS = 5

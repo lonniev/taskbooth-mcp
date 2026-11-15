@@ -1,4 +1,4 @@
-"""Task Queue — work posted with a signed rubric, paid in sats after it is graded.
+"""Task Booth — work posted with a signed rubric, paid in sats after it is graded.
 
 A purchaser posts a task with a rubric: the grades, and the sats each grade earns.
 A performer (a person or an agent, any npub) claims it, does it, and marks it done.
@@ -8,11 +8,11 @@ them.
 
 This module is the bootstrap: the standard DPYC tools (check_balance,
 purchase_credits, Secure Courier, Oracle, pricing, peer grants) come from
-``register_standard_tools`` in the tollbooth-dpyc wheel. The Task Queue's own
+``register_standard_tools`` in the tollbooth-dpyc wheel. The Task Booth's own
 tools join ``_DOMAIN_TOOLS`` as they are built.
 
 Run locally:
-    python -m taskqueue_mcp.server
+    python -m taskbooth_mcp.server
 """
 
 from __future__ import annotations
@@ -39,21 +39,22 @@ from tollbooth.tool_identity import (
     ToolIdentity,
 )
 
-from taskqueue_mcp import __version__, feed, payout, price
-from taskqueue_mcp.lifecycle import Action, State
-from taskqueue_mcp.store import NotYours, TaskStore
+from taskbooth_mcp import __version__, feed, payout, price
+from taskbooth_mcp.lifecycle import Action, State
+from taskbooth_mcp.store import NotYours, TaskStore
 
 logger = logging.getLogger(__name__)
 
 #: The Horizon project's own URL. The holder connection's OAuth endpoints live here.
+# Horizon still serves this Operator at the address it was created with.
 SERVICE_URL = "https://taskqueue-mcp.fastmcp.app"
 
 mcp = FastMCP(
-    "taskqueue-mcp",
+    "taskbooth-mcp",
     version=__version__,
     icons=[Icon(src="https://tollbooth-dpyc.com/dpyc-logo.png", mimeType="image/png")],
     instructions=(
-        "Task Queue — work posted with a signed rubric and paid in sats after it "
+        "Task Booth — work posted with a signed rubric and paid in sats after it "
         "is graded. Monetized via Tollbooth DPYC Bitcoin Lightning micropayments.\n\n"
         "## How it works\n"
         "A purchaser posts a task with a rubric: the grades, and the sats each "
@@ -61,35 +62,35 @@ mcp = FastMCP(
         "purchaser checks the work and picks a grade, and the sats go from the "
         "purchaser's own wallet to the performer's. This Operator never holds them.\n\n"
         "## A task, start to finish\n"
-        "1. The purchaser calls taskqueue_post_task with a title, a rubric, the npubs "
+        "1. The purchaser calls taskbooth_post_task with a title, a rubric, the npubs "
         "who may claim it (the audience) and a needed-by time.\n"
-        "2. A performer in the audience calls taskqueue_claim_task.\n"
-        "3. The performer does the work and calls taskqueue_mark_done.\n"
-        "4. The purchaser checks the work and calls taskqueue_assess_task with a grade "
-        "from the rubric, or taskqueue_reject_task.\n"
-        "5. The performer calls taskqueue_accept_assessment, or taskqueue_appeal_assessment "
-        "once; the rubric's tie-breaker then calls taskqueue_decide_appeal. The top "
+        "2. A performer in the audience calls taskbooth_claim_task.\n"
+        "3. The performer does the work and calls taskbooth_mark_done.\n"
+        "4. The purchaser checks the work and calls taskbooth_assess_task with a grade "
+        "from the rubric, or taskbooth_reject_task.\n"
+        "5. The performer calls taskbooth_accept_assessment, or taskbooth_appeal_assessment "
+        "once; the rubric's tie-breaker then calls taskbooth_decide_appeal. The top "
         "grade needs no acceptance.\n"
-        "6. The task is now owed. taskqueue_request_payout returns a Lightning invoice "
+        "6. The task is now owed. taskbooth_request_payout returns a Lightning invoice "
         "for exactly the grade's sats. The purchaser pays it from any wallet. The invoice "
         "comes from the performer's payout_address (a Lightning address, set with "
-        "taskqueue_set_my_property) when they have one. A performer without one makes an "
+        "taskbooth_set_my_property) when they have one. A performer without one makes an "
         "invoice for that amount in their own wallet and passes it as invoice.\n"
-        "7. The performer calls taskqueue_confirm_paid when the sats arrive.\n\n"
-        "taskqueue_calendar_publish mints a calendar feed of your tasks for a phone's "
-        "calendar app; taskqueue_calendar_list and taskqueue_calendar_revoke manage it.\n\n"
-        "taskqueue_list_tasks shows every task you have a part in; taskqueue_get_task "
-        "and taskqueue_task_history show one. A task past its needed-by time and "
+        "7. The performer calls taskbooth_confirm_paid when the sats arrive.\n\n"
+        "taskbooth_calendar_publish mints a calendar feed of your tasks for a phone's "
+        "calendar app; taskbooth_calendar_list and taskbooth_calendar_revoke manage it.\n\n"
+        "taskbooth_list_tasks shows every task you have a part in; taskbooth_get_task "
+        "and taskbooth_task_history show one. A task past its needed-by time and "
         "still unclaimed reads as expired. Times are Unix seconds. One npub may hold "
         "every role on a task, so you can post, claim, grade and pay yourself to try it.\n\n"
         "## Operator onboarding\n"
-        "Call taskqueue_get_operator_onboarding_status to check readiness.\n"
+        "Call taskbooth_get_operator_onboarding_status to check readiness.\n"
         "1. Register with an Authority (provides a Neon database automatically)\n"
         "2. Deliver operator secrets via Secure Courier: btcpay_host, "
-        "btcpay_api_key, btcpay_store_id. Call taskqueue_request_credential_channel to start.\n\n"
+        "btcpay_api_key, btcpay_store_id. Call taskbooth_request_credential_channel to start.\n\n"
         "## Pricing\n"
         "Tool prices are set by the operator's pricing model. Use "
-        "`taskqueue_check_price` to preview and `taskqueue_check_balance` to see your balance."
+        "`taskbooth_check_price` to preview and `taskbooth_check_balance` to see your balance."
     ),
 )
 
@@ -128,7 +129,7 @@ def _identity(tool_id: str, capability: str, category: str, title: str, behavior
                         behavior=behavior, intent=intent)
 
 
-#: The Task Queue's own tools, each with a frozen UUID minted once at its birth.
+#: The Task Booth's own tools, each with a frozen UUID minted once at its birth.
 _DOMAIN_TOOLS: list[ToolIdentity] = [
     _identity(POST_TASK_UUID, "post_task", "write", "Post a task", CREATES,
               "Post a task with its rubric, its audience and a needed-by time"),
@@ -178,7 +179,7 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
 ]
 
-#: What a patron may set about themselves here (taskqueue_set_my_property).
+#: What a patron may set about themselves here (taskbooth_set_my_property).
 PATRON_PROPERTIES: dict[str, PropertySpec] = {
     "payout_address": PropertySpec(
         kind="text", default=None, label="Payout address",
@@ -191,6 +192,7 @@ TOOL_REGISTRY: dict[str, ToolIdentity] = {ti.tool_id: ti for ti in _DOMAIN_TOOLS
 runtime = OperatorRuntime(
     tool_registry={**STANDARD_IDENTITIES, **TOOL_REGISTRY},
     operator_credential_template=CredentialTemplate(
+        # The vault files the Operator's BTCPay credentials under this key; it changes only with a redelivery.
         service="taskqueue-operator",
         version=1,
         description="Operator credentials for BTCPay Lightning payments",
@@ -210,11 +212,11 @@ runtime = OperatorRuntime(
         },
     ),
     operator_credential_greeting=(
-        "Hi — I'm Task Queue, an MCP service where work is posted with a signed "
+        "Hi — I'm Task Booth, an MCP service where work is posted with a signed "
         "rubric and paid in sats after it is graded. You (or your AI agent) "
         "requested a credential channel."
     ),
-    service_name="Task Queue",
+    service_name="Task Booth",
     credential_validator=validate_btcpay_creds,
     holder_auth_url=SERVICE_URL,
     patron_properties=PATRON_PROPERTIES,
@@ -222,9 +224,9 @@ runtime = OperatorRuntime(
 
 tool = register_standard_tools(
     mcp,
-    "taskqueue",
+    "taskbooth",
     runtime,
-    service_name="taskqueue",
+    service_name="taskbooth",
     service_version=__version__,
 )
 
@@ -458,7 +460,7 @@ async def assess_task(task_id: str, grade: str, reasons: str = "", npub: PatronN
 async def reject_task(task_id: str, reasons: str = "", npub: PatronNpub = "") -> dict[str, Any]:
     """Say the work was not done, or not accepted at all. Nothing is owed.
 
-    For work that was done poorly, give it a low grade with taskqueue_assess_task instead.
+    For work that was done poorly, give it a low grade with taskbooth_assess_task instead.
 
     Args:
         task_id: A task marked done that you may grade.
@@ -509,7 +511,7 @@ async def request_payout(task_id: str, invoice: str = "", npub: PatronNpub = "")
 
     The purchaser pays it from any wallet; the sats go straight to the performer.
     Asking again returns the same invoice until it expires, then a fresh one.
-    The performer calls taskqueue_confirm_paid once the sats arrive.
+    The performer calls taskbooth_confirm_paid once the sats arrive.
 
     The invoice is fetched from the performer's payout_address when they have
     one. A performer without one makes an invoice for exactly the sats owed in
@@ -548,7 +550,7 @@ async def save_rubric_template(
 
     Args:
         name: What to call it, e.g. "Bedroom chores".
-        rubric: The grades and what each earns, as for taskqueue_post_task.
+        rubric: The grades and what each earns, as for taskbooth_post_task.
         template_id: A template of yours to replace. Omit to keep a new one.
     """
     db = await store()
@@ -577,7 +579,7 @@ async def calendar_publish(name: str, time_zone: str, npub: PatronNpub = "") -> 
     Returns a token. The site you use serves the feed at an address built from
     it. The token is the feed's only lock: anyone who has the address can read
     your tasks' titles, details, due days and rewards. The feed names nobody
-    and carries no npub. taskqueue_calendar_revoke stops it.
+    and carries no npub. taskbooth_calendar_revoke stops it.
 
     Args:
         name: What the calendar is called in the calendar app, e.g. "Sam's chores".
@@ -597,7 +599,7 @@ async def calendar_fetch(token: str) -> dict[str, Any]:
     feed is built now, from the tasks as they stand.
 
     Args:
-        token: The feed token from taskqueue_calendar_publish.
+        token: The feed token from taskbooth_calendar_publish.
     """
     db = await store()
     found = await db.feed_for(token)

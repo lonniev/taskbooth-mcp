@@ -4,8 +4,8 @@ import pytest
 from pynostr.key import PrivateKey
 from tollbooth.vault_encryption import VaultCipher
 
-from taskqueue_mcp.lifecycle import Action
-from taskqueue_mcp.store import NotYours, StoreUnavailable, TaskStore, checked_rubric
+from taskbooth_mcp.lifecycle import Action
+from taskbooth_mcp.store import NotYours, StoreUnavailable, TaskStore, checked_rubric
 from tests.sqlite_neon import SqliteNeon
 
 NOW = 1_800_000_000
@@ -63,8 +63,8 @@ async def test_a_store_without_a_cipher_refuses_to_start():
 
 async def test_the_schema_has_the_four_tables_the_design_names(queue):
     neon, _ = queue
-    assert {"taskqueue_tasks", "taskqueue_events", "taskqueue_payouts",
-            "taskqueue_rubric_templates"} <= neon.tables()
+    assert {"taskbooth_tasks", "taskbooth_events", "taskbooth_payouts",
+            "taskbooth_rubric_templates"} <= neon.tables()
 
 
 async def test_words_and_amounts_are_never_stored_in_the_clear(queue, family):
@@ -145,19 +145,19 @@ async def test_events_are_only_ever_inserted(queue, family):
     task = await _post(db, family)
     await _to_done(db, family, task)
     await db.act(family["parent"], task, Action.REJECT, reasons="Not done at all", at=NOW + 30)
-    touching = [s for s in neon.sql if "taskqueue_events" in s and not s.startswith(("CREATE", "SELECT"))]
+    touching = [s for s in neon.sql if "taskbooth_events" in s and not s.startswith(("CREATE", "SELECT", "ALTER TABLE IF EXISTS"))]
     assert touching and all(s.startswith("INSERT INTO") for s in touching)
 
 
 async def test_an_illegal_move_is_refused_and_changes_nothing(queue, family):
     neon, db = queue
     task = await _post(db, family)
-    before = neon.rows("taskqueue_tasks"), neon.rows("taskqueue_events")
+    before = neon.rows("taskbooth_tasks"), neon.rows("taskbooth_events")
     with pytest.raises(ValueError, match="Only the audience may 'claim'"):
         await db.act(family["parent"], task, Action.CLAIM, at=NOW + 5)
     with pytest.raises(ValueError, match="cannot be given 'assess'"):
         await db.act(family["parent"], task, Action.ASSESS, grade="Tidy", at=NOW + 5)
-    assert (neon.rows("taskqueue_tasks"), neon.rows("taskqueue_events")) == before
+    assert (neon.rows("taskbooth_tasks"), neon.rows("taskbooth_events")) == before
 
 
 async def test_of_two_who_claim_at_once_only_one_wins(queue, family):
@@ -301,7 +301,7 @@ async def test_an_unclaimed_task_past_its_time_reads_as_expired_and_stays_posted
     task = await _post(db, family)
     seen = await db.get(family["parent"], task, at=NOW + 3 * DAY)
     assert seen["standing"] == "expired" and seen["state"] == "posted"
-    assert neon.rows("taskqueue_tasks")[0]["state"] == "posted"
+    assert neon.rows("taskbooth_tasks")[0]["state"] == "posted"
     with pytest.raises(ValueError, match="needed-by time has passed"):
         await db.act(family["child"], task, Action.CLAIM, at=NOW + 3 * DAY)
     withdrawn = await db.act(family["parent"], task, Action.WITHDRAW, at=NOW + 3 * DAY)
@@ -343,7 +343,7 @@ async def test_a_recurring_task_nobody_did_comes_back_once_on_the_next_read(queu
     for _ in range(2):
         tasks = await db.tasks_of(family["child"], at=at)
     assert [s for s in neon.sql if not s.startswith("SELECT")] == writes, "a later read writes nothing"
-    assert len(neon.rows("taskqueue_tasks")) == 2
+    assert len(neon.rows("taskbooth_tasks")) == 2
     assert [t["standing"] for t in tasks] == ["expired", "posted"]
     assert tasks[1]["needed_by"] == NOW + 2 * DAY + 21 * DAY
     assert tasks[0]["task_id"] == first
@@ -354,7 +354,7 @@ async def test_a_withdrawn_recurring_task_does_not_come_back(queue, family):
     task = await _post(db, family, every_days=7)
     await db.act(family["parent"], task, Action.WITHDRAW, at=NOW + 10)
     await db.tasks_of(family["parent"], at=NOW + 30 * DAY)
-    assert len(neon.rows("taskqueue_tasks")) == 1
+    assert len(neon.rows("taskbooth_tasks")) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +387,7 @@ async def test_a_malformed_task_is_refused_and_nothing_is_stored(queue, family, 
     neon, db = queue
     with pytest.raises(ValueError, match=says):
         await _post(db, family, **over)
-    assert neon.rows("taskqueue_tasks") == []
+    assert neon.rows("taskbooth_tasks") == []
 
 
 async def test_a_task_with_no_named_tie_breaker_falls_to_the_purchaser(queue, family):
@@ -411,3 +411,33 @@ async def test_a_rubric_template_is_kept_replaced_and_private_to_its_owner(queue
     assert await db.templates_of(family["child"]) == []
     with pytest.raises(NotYours):
         await db.save_template(family["child"], "Mine now", RUBRIC, kept)
+
+
+# ---------------------------------------------------------------------------
+# The tables carry over from the Operator's first name
+# ---------------------------------------------------------------------------
+
+FIRST = "task" + "queue"
+
+
+async def test_tables_made_under_the_first_name_are_renamed_with_their_rows():
+    neon = SqliteNeon(cipher=VaultCipher(nsec_hex=PrivateKey().hex()))
+    neon.db.execute(f"CREATE TABLE op.{FIRST}_payouts (task_id TEXT PRIMARY KEY, paid_at BIGINT, data_enc TEXT NOT NULL)")
+    neon.db.execute(f"INSERT INTO op.{FIRST}_payouts VALUES ('t1', NULL, 'sealed')")
+    neon.db.execute(f"CREATE TABLE op.{FIRST}_people (task_id TEXT NOT NULL, npub TEXT NOT NULL, role TEXT NOT NULL)")
+    neon.db.execute(f"CREATE INDEX op.idx_{FIRST}_people_npub ON {FIRST}_people(npub)")
+
+    await TaskStore(neon).ensure_schema()
+
+    assert not any(FIRST in name for name in neon.tables())
+    assert neon.rows("taskbooth_payouts") == [{"task_id": "t1", "paid_at": None, "data_enc": "sealed"}]
+    assert {"taskbooth_tasks", "taskbooth_people", "taskbooth_feeds"} <= neon.tables()
+
+
+async def test_renaming_is_a_no_op_on_a_fresh_store_and_on_every_later_start():
+    neon = SqliteNeon(cipher=VaultCipher(nsec_hex=PrivateKey().hex()))
+    store = TaskStore(neon)
+    await store.ensure_schema()
+    before = neon.tables()
+    await store.ensure_schema()
+    assert neon.tables() == before and not any(FIRST in name for name in before)

@@ -21,7 +21,7 @@ from typing import Any
 from tollbooth import bolt11
 from tollbooth.lnurl import LnurlResolutionError, resolve_lightning_address
 
-from taskqueue_mcp.lifecycle import State
+from taskbooth_mcp.lifecycle import State
 
 #: An invoice this close to expiry is replaced: nobody should scan a QR code
 #: that dies while their wallet is opening.
@@ -143,7 +143,7 @@ async def invoice_for(
     if not address:
         raise ValueError(
             f"The performer has not set a payout_address. They make an invoice for exactly {sats} sats "
-            "in their own wallet and pass it to taskqueue_request_payout as invoice."
+            "in their own wallet and pass it to taskbooth_request_payout as invoice."
         )
     address = checked_address(address)
     try:

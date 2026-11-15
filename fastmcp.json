@@ -1,7 +1,7 @@
 {
-  "name": "Task Queue",
+  "name": "Task Booth",
   "source": {
-    "path": "src/taskqueue_mcp/server.py",
+    "path": "src/taskbooth_mcp/server.py",
     "entrypoint": "mcp"
   },
   "environment": {
