@@ -53,8 +53,7 @@ mcp = FastMCP(
         "## A task, start to finish\n"
         "1. The purchaser calls taskqueue_post_task with a title, a rubric, the npubs "
         "who may claim it (the audience) and a needed-by time.\n"
-        "2. A performer in the audience sets a payout_address (a Lightning address) "
-        "with taskqueue_set_my_property, then calls taskqueue_claim_task.\n"
+        "2. A performer in the audience calls taskqueue_claim_task.\n"
         "3. The performer does the work and calls taskqueue_mark_done.\n"
         "4. The purchaser checks the work and calls taskqueue_assess_task with a grade "
         "from the rubric, or taskqueue_reject_task.\n"
@@ -62,7 +61,10 @@ mcp = FastMCP(
         "once; the rubric's tie-breaker then calls taskqueue_decide_appeal. The top "
         "grade needs no acceptance.\n"
         "6. The task is now owed. taskqueue_request_payout returns a Lightning invoice "
-        "for exactly the grade's sats. The purchaser pays it from any wallet.\n"
+        "for exactly the grade's sats. The purchaser pays it from any wallet. The invoice "
+        "comes from the performer's payout_address (a Lightning address, set with "
+        "taskqueue_set_my_property) when they have one. A performer without one makes an "
+        "invoice for that amount in their own wallet and passes it as invoice.\n"
         "7. The performer calls taskqueue_confirm_paid when the sats arrive.\n\n"
         "taskqueue_list_tasks shows every task you have a part in; taskqueue_get_task "
         "and taskqueue_task_history show one. A task past its needed-by time and "
@@ -153,7 +155,7 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
 PATRON_PROPERTIES: dict[str, PropertySpec] = {
     "payout_address": PropertySpec(
         kind="text", default=None, label="Payout address",
-        description="The Lightning address your rewards are paid to, like name@wallet.example.",
+        description="Optional. The Lightning address your rewards are paid to, like name@wallet.example.",
     ),
 }
 
@@ -330,24 +332,10 @@ async def task_history(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
 async def claim_task(task_id: str, signature: str = "", npub: PatronNpub = "") -> dict[str, Any]:
     """Take on a posted task. You must be in its audience.
 
-    A task that can earn sats needs your payout_address first; set it with
-    taskqueue_set_my_property(name="payout_address", value="name@wallet.example").
-
     Args:
         task_id: The task.
         signature: Your countersignature on the offer, when your client makes one.
     """
-    me = runtime.resolve_npub(npub)
-    db = await store()
-    task = await _do(db.get(me, str(task_id)))
-    if max(g["sats"] for g in task["rubric"]["grades"]) > 0:
-        try:
-            payout.checked_address(await payout_address_of(me))
-        except ValueError:
-            raise ValueError(
-                "Set your payout_address first, so you can be paid: "
-                'taskqueue_set_my_property(name="payout_address", value="name@wallet.example").'
-            ) from None
     return await _move(npub, task_id, Action.CLAIM, performer_signature=signature)
 
 
@@ -489,15 +477,20 @@ async def delegate_assessor(
 
 @tool
 @runtime.paid_tool(REQUEST_PAYOUT_UUID)
-async def request_payout(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+async def request_payout(task_id: str, invoice: str = "", npub: PatronNpub = "") -> dict[str, Any]:
     """The Lightning invoice that pays an owed task, for exactly the sats its grade earns.
 
     The purchaser pays it from any wallet; the sats go straight to the performer.
     Asking again returns the same invoice until it expires, then a fresh one.
     The performer calls taskqueue_confirm_paid once the sats arrive.
 
+    The invoice is fetched from the performer's payout_address when they have
+    one. A performer without one makes an invoice for exactly the sats owed in
+    their own wallet and passes it here as invoice.
+
     Args:
         task_id: An owed task you posted or performed.
+        invoice: The performer's own BOLT11 invoice for exactly the sats owed. Only the performer passes one.
     """
     me = runtime.resolve_npub(npub)
     db = await store()
@@ -506,9 +499,11 @@ async def request_payout(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
         raise ValueError("Only the purchaser or the performer may ask for a task's payout invoice.")
     if task["state"] != State.OWED:
         raise ValueError(f"This task is {task['standing']}; an invoice is made only for a task that is owed.")
+    if invoice:
+        if "performer" not in task["your_roles"]:
+            raise ValueError("Only the performer may hand in their own invoice.")
+        return {"ok": True, "payout": await payout.invoice_from_performer(db, task, invoice, performer=me)}
     address = await payout_address_of(task["performer"])
-    if not address:
-        raise ValueError("The performer has not set a payout_address, so there is nowhere to pay.")
     return {"ok": True, "payout": await payout.invoice_for(db, task, address, requested_by=me)}
 
 
