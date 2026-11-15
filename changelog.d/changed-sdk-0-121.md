@@ -1,0 +1,1 @@
+- Requires tollbooth-dpyc 0.121.0, for its BOLT11 invoice reader.
