@@ -9,7 +9,7 @@ from itertools import product
 
 import pytest
 
-from taskqueue_mcp.lifecycle import (
+from taskbooth_mcp.lifecycle import (
     EXPIRED,
     Action,
     Facts,

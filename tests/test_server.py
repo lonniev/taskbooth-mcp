@@ -2,7 +2,7 @@
 
 from fastmcp import Client
 
-from taskqueue_mcp import __version__, server
+from taskbooth_mcp import __version__, server
 
 
 async def tool_names() -> set[str]:
@@ -10,12 +10,12 @@ async def tool_names() -> set[str]:
         return {t.name for t in await c.list_tools()}
 
 
-async def test_standard_tools_are_served_under_the_taskqueue_prefix():
+async def test_standard_tools_are_served_under_the_taskbooth_prefix():
     names = await tool_names()
     for standard in ("service_status", "check_balance", "purchase_credits", "check_price",
                      "request_credential_channel", "get_operator_onboarding_status"):
-        assert f"taskqueue_{standard}" in names
-    assert all(n.startswith("taskqueue_") for n in names)
+        assert f"taskbooth_{standard}" in names
+    assert all(n.startswith("taskbooth_") for n in names)
 
 
 async def test_every_served_tool_is_in_the_registry():
@@ -23,7 +23,7 @@ async def test_every_served_tool_is_in_the_registry():
     registered = {ti.capability for ti in server.runtime._tool_registry.values()}
     names = await tool_names()
     assert names
-    assert {n.removeprefix("taskqueue_") for n in names} <= registered
+    assert {n.removeprefix("taskbooth_") for n in names} <= registered
 
 
 def test_domain_tool_ids_are_unique_uuids():

@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from taskqueue_mcp import price
+from taskbooth_mcp import price
 
 NOW = 1_800_000_000
 YEAR = 365 * 86_400

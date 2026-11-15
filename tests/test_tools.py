@@ -1,4 +1,4 @@
-"""The Task Queue as a caller meets it, through FastMCP's in-memory client."""
+"""The Task Booth as a caller meets it, through FastMCP's in-memory client."""
 
 import json
 import time
@@ -10,8 +10,8 @@ from tollbooth import bolt11
 from tollbooth.lnurl import LnurlResolutionError
 from tollbooth.vault_encryption import VaultCipher
 
-from taskqueue_mcp import payout, server
-from taskqueue_mcp.store import TaskStore
+from taskbooth_mcp import payout, server
+from taskbooth_mcp.store import TaskStore
 from tests.invoices import make_invoice, payment_hash_of
 from tests.sqlite_neon import SqliteNeon
 
@@ -85,7 +85,7 @@ def wallets(monkeypatch):
 
 async def call(tool, **args):
     async with Client(server.mcp) as c:
-        result = await c.call_tool(f"taskqueue_{tool}", args, raise_on_error=False)
+        result = await c.call_tool(f"taskbooth_{tool}", args, raise_on_error=False)
     return json.loads(result.content[0].text)
 
 
@@ -587,7 +587,7 @@ async def test_a_revoked_feed_opens_nothing_and_only_its_owner_revokes_it(anyone
 
 async def test_the_token_is_stored_sealed_and_looked_up_by_its_hash(anyone, queue, wallets):
     token = (await feed_of(CHILD))["feed"]["token"]
-    rows = await queue._rows(f"SELECT token_key, data_enc FROM {queue._t('taskqueue_feeds')}", [])
+    rows = await queue._rows(f"SELECT token_key, data_enc FROM {queue._t('taskbooth_feeds')}", [])
     assert len(rows) == 1 and token not in rows[0]["token_key"] and token not in rows[0]["data_enc"]
 
 

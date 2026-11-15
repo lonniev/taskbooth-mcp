@@ -1436,7 +1436,7 @@ wheels = [
 ]
 
 [[package]]
-name = "taskqueue-mcp"
+name = "taskbooth-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

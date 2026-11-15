@@ -1,7 +1,7 @@
 """Tasks and their whole history, on the operator's Neon schema.
 
 A task is posted by a purchaser with a rubric, claimed by a performer, marked
-done, assessed, and paid or rejected. :mod:`taskqueue_mcp.lifecycle` says which
+done, assessed, and paid or rejected. :mod:`taskbooth_mcp.lifecycle` says which
 of those moves is legal; this module is the only thing that writes one down.
 
 What a person wrote and what anything is worth (titles, descriptions, rubrics,
@@ -13,7 +13,7 @@ Three rules the SQL keeps:
 
 - A move is a compare-and-swap on the task's ``version``. Of two people acting
   at once, one wins and the other is told to read the task again.
-- ``taskqueue_events`` is append-only: one row per move, numbered by the
+- ``taskbooth_events`` is append-only: one row per move, numbered by the
   version it produced, with the npub that caused it. Nothing here updates or
   deletes an event.
 - There is no clock. A posted task past its needed-by time *reads* as expired,
@@ -28,8 +28,8 @@ import secrets
 import time
 from typing import Any
 
-from taskqueue_mcp import feed
-from taskqueue_mcp.lifecycle import (
+from taskbooth_mcp import feed
+from taskbooth_mcp.lifecycle import (
     EXPIRED,
     Action,
     Facts,
@@ -159,36 +159,51 @@ class TaskStore:
         opened = json.loads(self._cipher.decrypt(sealed))
         return opened if isinstance(opened, dict) else {}
 
+    #: Tables and indexes made under this Operator's first name, and what each is called now.
+    _RENAMED_TABLES = ("tasks", "people", "events", "payouts", "rubric_templates", "feeds")
+    _RENAMED_INDEXES = ("tasks_purchaser", "tasks_performer", "people_npub", "templates_owner", "feeds_owner")
+
+    async def _rename_from_first_name(self) -> None:
+        """Carry the tables over from the name this Operator was born with. A no-op once done."""
+        was = "task" + "queue"
+        for table in self._RENAMED_TABLES:
+            await self._neon._execute(
+                f"ALTER TABLE IF EXISTS {self._t(f'{was}_{table}')} RENAME TO taskbooth_{table}", [])
+        for index in self._RENAMED_INDEXES:
+            await self._neon._execute(
+                f"ALTER INDEX IF EXISTS {self._t(f'idx_{was}_{index}')} RENAME TO idx_taskbooth_{index}", [])
+
     async def ensure_schema(self) -> None:
+        await self._rename_from_first_name()
         for sql in (
-            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_tasks')} ("
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_tasks')} ("
              "task_id TEXT PRIMARY KEY, purchaser_npub TEXT NOT NULL, performer_npub TEXT, "
              "state TEXT NOT NULL, final INTEGER NOT NULL, needed_by BIGINT NOT NULL, "
              "series_id TEXT NOT NULL, occurrence INTEGER NOT NULL, rolled INTEGER NOT NULL, "
              "org_id TEXT, project_id TEXT, version INTEGER NOT NULL, "
              "created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, data_enc TEXT NOT NULL, "
              "UNIQUE (series_id, occurrence))"),
-            f"CREATE INDEX IF NOT EXISTS idx_taskqueue_tasks_purchaser ON {self._t('taskqueue_tasks')}(purchaser_npub)",
-            f"CREATE INDEX IF NOT EXISTS idx_taskqueue_tasks_performer ON {self._t('taskqueue_tasks')}(performer_npub)",
-            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_people')} ("
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_tasks_purchaser ON {self._t('taskbooth_tasks')}(purchaser_npub)",
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_tasks_performer ON {self._t('taskbooth_tasks')}(performer_npub)",
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_people')} ("
              "task_id TEXT NOT NULL, npub TEXT NOT NULL, role TEXT NOT NULL, "
              "PRIMARY KEY (task_id, npub, role))"),
-            f"CREATE INDEX IF NOT EXISTS idx_taskqueue_people_npub ON {self._t('taskqueue_people')}(npub)",
-            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_events')} ("
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_people_npub ON {self._t('taskbooth_people')}(npub)",
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_events')} ("
              "task_id TEXT NOT NULL, seq INTEGER NOT NULL, at BIGINT NOT NULL, actor_npub TEXT NOT NULL, "
              "action TEXT NOT NULL, from_state TEXT NOT NULL, to_state TEXT NOT NULL, "
              "detail_enc TEXT NOT NULL, PRIMARY KEY (task_id, seq))"),
-            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_payouts')} ("
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_payouts')} ("
              "task_id TEXT PRIMARY KEY, paid_at BIGINT, data_enc TEXT NOT NULL)"),
-            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_rubric_templates')} ("
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_rubric_templates')} ("
              "template_id TEXT PRIMARY KEY, owner_npub TEXT NOT NULL, data_enc TEXT NOT NULL, "
              "created_at BIGINT NOT NULL)"),
-            (f"CREATE INDEX IF NOT EXISTS idx_taskqueue_templates_owner "
-             f"ON {self._t('taskqueue_rubric_templates')}(owner_npub)"),
-            (f"CREATE TABLE IF NOT EXISTS {self._t('taskqueue_feeds')} ("
+            (f"CREATE INDEX IF NOT EXISTS idx_taskbooth_templates_owner "
+             f"ON {self._t('taskbooth_rubric_templates')}(owner_npub)"),
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_feeds')} ("
              "token_key TEXT PRIMARY KEY, owner_npub TEXT NOT NULL, created_at BIGINT NOT NULL, "
              "fetches INTEGER NOT NULL, last_fetch BIGINT, data_enc TEXT NOT NULL)"),
-            f"CREATE INDEX IF NOT EXISTS idx_taskqueue_feeds_owner ON {self._t('taskqueue_feeds')}(owner_npub)",
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_feeds_owner ON {self._t('taskbooth_feeds')}(owner_npub)",
         ):
             await self._neon._execute(sql, [])
 
@@ -216,7 +231,7 @@ class TaskStore:
 
     async def _load(self, task_id: str) -> dict[str, Any] | None:
         rows = await self._rows(
-            f"SELECT {_TASK_COLUMNS} FROM {self._t('taskqueue_tasks')} WHERE task_id = $1", [str(task_id)]
+            f"SELECT {_TASK_COLUMNS} FROM {self._t('taskbooth_tasks')} WHERE task_id = $1", [str(task_id)]
         )
         return self._task(rows[0]) if rows else None
 
@@ -267,9 +282,9 @@ class TaskStore:
         at = int(time.time()) if at is None else at
         for _ in range(2):
             rows = await self._rows(
-                f"SELECT {_TASK_COLUMNS} FROM {self._t('taskqueue_tasks')} WHERE purchaser_npub = $1 "
+                f"SELECT {_TASK_COLUMNS} FROM {self._t('taskbooth_tasks')} WHERE purchaser_npub = $1 "
                 f"OR performer_npub = $1 OR task_id IN "
-                f"(SELECT task_id FROM {self._t('taskqueue_people')} WHERE npub = $1) "
+                f"(SELECT task_id FROM {self._t('taskbooth_people')} WHERE npub = $1) "
                 "ORDER BY needed_by, task_id",
                 [npub],
             )
@@ -290,7 +305,7 @@ class TaskStore:
             raise NotYours(f"No task {task_id!r} is yours to see.")
         rows = await self._rows(
             f"SELECT seq, at, actor_npub, action, from_state, to_state, detail_enc "
-            f"FROM {self._t('taskqueue_events')} WHERE task_id = $1 ORDER BY seq",
+            f"FROM {self._t('taskbooth_events')} WHERE task_id = $1 ORDER BY seq",
             [task_id],
         )
         return [
@@ -360,7 +375,7 @@ class TaskStore:
     ) -> bool:
         """Write a new posted task, its people and its first event. False if the occurrence exists."""
         made = await self._rows(
-            f"INSERT INTO {self._t('taskqueue_tasks')} ({_TASK_COLUMNS}) VALUES "
+            f"INSERT INTO {self._t('taskbooth_tasks')} ({_TASK_COLUMNS}) VALUES "
             "($1, $2, NULL, $3, 0, $4, $5, $6, 0, $7, $8, 1, $9, $9, $10) "
             "ON CONFLICT (series_id, occurrence) DO NOTHING RETURNING task_id",
             [task_id, purchaser, State.POSTED.value, needed_by, series_id, occurrence,
@@ -375,7 +390,7 @@ class TaskStore:
         )
         for npub, role in people:
             await self._neon._execute(
-                f"INSERT INTO {self._t('taskqueue_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
+                f"INSERT INTO {self._t('taskbooth_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
                 "ON CONFLICT (task_id, npub, role) DO NOTHING",
                 [task_id, npub, role.value],
             )
@@ -388,7 +403,7 @@ class TaskStore:
     ) -> None:
         """Append one event. Events are only ever inserted."""
         await self._neon._execute(
-            f"INSERT INTO {self._t('taskqueue_events')} "
+            f"INSERT INTO {self._t('taskbooth_events')} "
             "(task_id, seq, at, actor_npub, action, from_state, to_state, detail_enc) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             [task_id, seq, at, actor, action, was, now, self._seal(detail)],
@@ -477,7 +492,7 @@ class TaskStore:
                 data["paid_at"] = at
 
         moved = await self._rows(
-            f"UPDATE {self._t('taskqueue_tasks')} SET state = $1, final = $2, performer_npub = $3, "
+            f"UPDATE {self._t('taskbooth_tasks')} SET state = $1, final = $2, performer_npub = $3, "
             "data_enc = $4, version = version + 1, updated_at = $5 "
             "WHERE task_id = $6 AND version = $7 RETURNING version",
             [now.state.value, int(now.final), performer, self._seal(data), at, task_id, task["version"]],
@@ -490,7 +505,7 @@ class TaskStore:
 
         if now.state is State.PAID:
             await self._neon._execute(
-                f"UPDATE {self._t('taskqueue_payouts')} SET paid_at = $1 WHERE task_id = $2", [at, task_id]
+                f"UPDATE {self._t('taskbooth_payouts')} SET paid_at = $1 WHERE task_id = $2", [at, task_id]
             )
         if action is Action.MARK_DONE and data["every_days"]:
             await self._recur(task, npub, at)
@@ -524,7 +539,7 @@ class TaskStore:
             raise ValueError(f"A task names at most {MAX_PEOPLE} assessors.")
         data = {k: task[k] for k in self._sealed_keys(task)} | {"assessors": wanted}
         moved = await self._rows(
-            f"UPDATE {self._t('taskqueue_tasks')} SET data_enc = $1, version = version + 1, updated_at = $2 "
+            f"UPDATE {self._t('taskbooth_tasks')} SET data_enc = $1, version = version + 1, updated_at = $2 "
             "WHERE task_id = $3 AND version = $4 RETURNING version",
             [self._seal(data), at, task_id, task["version"]],
         )
@@ -532,13 +547,13 @@ class TaskStore:
             raise ValueError("Someone else changed this task first. Read it again.")
         if on:
             await self._neon._execute(
-                f"INSERT INTO {self._t('taskqueue_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
+                f"INSERT INTO {self._t('taskbooth_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
                 "ON CONFLICT (task_id, npub, role) DO NOTHING",
                 [task_id, assessor, Role.ASSESSOR.value],
             )
         else:
             await self._neon._execute(
-                f"DELETE FROM {self._t('taskqueue_people')} WHERE task_id = $1 AND npub = $2 AND role = $3",
+                f"DELETE FROM {self._t('taskbooth_people')} WHERE task_id = $1 AND npub = $2 AND role = $3",
                 [task_id, assessor, Role.ASSESSOR.value],
             )
         await self._record(
@@ -572,7 +587,7 @@ class TaskStore:
             data=data, actor=actor, action="recur", at=at,
         )
         await self._neon._execute(
-            f"UPDATE {self._t('taskqueue_tasks')} SET rolled = 1 WHERE task_id = $1", [task["task_id"]]
+            f"UPDATE {self._t('taskbooth_tasks')} SET rolled = 1 WHERE task_id = $1", [task["task_id"]]
         )
 
     # -- payouts -------------------------------------------------------------
@@ -584,14 +599,14 @@ class TaskStore:
         before an invoice is shown or paid.
         """
         await self._neon._execute(
-            f"INSERT INTO {self._t('taskqueue_payouts')} (task_id, paid_at, data_enc) VALUES ($1, NULL, $2) "
+            f"INSERT INTO {self._t('taskbooth_payouts')} (task_id, paid_at, data_enc) VALUES ($1, NULL, $2) "
             "ON CONFLICT (task_id) DO UPDATE SET data_enc = EXCLUDED.data_enc",
             [task_id, self._seal(payout)],
         )
 
     async def payout(self, task_id: str) -> dict[str, Any] | None:
         rows = await self._rows(
-            f"SELECT paid_at, data_enc FROM {self._t('taskqueue_payouts')} WHERE task_id = $1", [task_id]
+            f"SELECT paid_at, data_enc FROM {self._t('taskbooth_payouts')} WHERE task_id = $1", [task_id]
         )
         if not rows:
             return None
@@ -606,7 +621,7 @@ class TaskStore:
                              "rubric": checked_rubric(rubric)})
         if template_id:
             changed = await self._rows(
-                f"UPDATE {self._t('taskqueue_rubric_templates')} SET data_enc = $1 "
+                f"UPDATE {self._t('taskbooth_rubric_templates')} SET data_enc = $1 "
                 "WHERE template_id = $2 AND owner_npub = $3 RETURNING template_id",
                 [sealed, template_id, owner],
             )
@@ -615,7 +630,7 @@ class TaskStore:
             return template_id
         template_id = new_id()
         await self._neon._execute(
-            f"INSERT INTO {self._t('taskqueue_rubric_templates')} (template_id, owner_npub, data_enc, created_at) "
+            f"INSERT INTO {self._t('taskbooth_rubric_templates')} (template_id, owner_npub, data_enc, created_at) "
             "VALUES ($1, $2, $3, $4)",
             [template_id, checked_npub(owner, "owner"), sealed, int(time.time())],
         )
@@ -623,7 +638,7 @@ class TaskStore:
 
     async def templates_of(self, owner: str) -> list[dict[str, Any]]:
         rows = await self._rows(
-            f"SELECT template_id, data_enc, created_at FROM {self._t('taskqueue_rubric_templates')} "
+            f"SELECT template_id, data_enc, created_at FROM {self._t('taskbooth_rubric_templates')} "
             "WHERE owner_npub = $1 ORDER BY created_at, template_id",
             [owner],
         )
@@ -646,7 +661,7 @@ class TaskStore:
         token = feed.new_token()
         at = int(time.time()) if at is None else at
         await self._neon._execute(
-            f"INSERT INTO {self._t('taskqueue_feeds')} (token_key, owner_npub, created_at, fetches, last_fetch, data_enc) "
+            f"INSERT INTO {self._t('taskbooth_feeds')} (token_key, owner_npub, created_at, fetches, last_fetch, data_enc) "
             "VALUES ($1, $2, $3, 0, NULL, $4)",
             [feed.token_key(token), owner, at, self._seal({"token": token, "name": name, "zone": zone})],
         )
@@ -654,7 +669,7 @@ class TaskStore:
 
     async def feeds_of(self, owner: str) -> list[dict[str, Any]]:
         rows = await self._rows(
-            f"SELECT created_at, fetches, last_fetch, data_enc FROM {self._t('taskqueue_feeds')} "
+            f"SELECT created_at, fetches, last_fetch, data_enc FROM {self._t('taskbooth_feeds')} "
             "WHERE owner_npub = $1 ORDER BY created_at, token_key",
             [owner],
         )
@@ -664,7 +679,7 @@ class TaskStore:
     async def feed_for(self, token: str, at: int | None = None) -> dict[str, Any] | None:
         """Whose feed a token opens, with its name and zone, counting the read. ``None`` when it opens nothing."""
         rows = await self._rows(
-            f"UPDATE {self._t('taskqueue_feeds')} SET fetches = fetches + 1, last_fetch = $1 "
+            f"UPDATE {self._t('taskbooth_feeds')} SET fetches = fetches + 1, last_fetch = $1 "
             "WHERE token_key = $2 RETURNING owner_npub, data_enc",
             [int(time.time()) if at is None else at, feed.token_key(feed.checked_token(token))],
         )
@@ -675,7 +690,7 @@ class TaskStore:
     async def revoke_feed(self, owner: str, token: str) -> bool:
         """Stop a feed of the owner's. True when one was stopped."""
         gone = await self._rows(
-            f"DELETE FROM {self._t('taskqueue_feeds')} WHERE token_key = $1 AND owner_npub = $2 RETURNING token_key",
+            f"DELETE FROM {self._t('taskbooth_feeds')} WHERE token_key = $1 AND owner_npub = $2 RETURNING token_key",
             [feed.token_key(feed.checked_token(token)), owner],
         )
         return bool(gone)

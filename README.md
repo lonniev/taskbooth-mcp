@@ -1,4 +1,4 @@
-# Task Queue
+# Task Booth
 
 A Tollbooth DPYC™ Operator where work is posted with a signed rubric and paid in sats after it is graded.
 
@@ -12,14 +12,14 @@ Allowance, for household chores, is the first instance.
 
 ## Status
 
-This version serves the standard DPYC tools only, under the `taskqueue_` prefix.
-The Task Queue's own tools arrive in later releases.
+This version serves the standard DPYC tools only, under the `taskbooth_` prefix.
+The Task Booth's own tools arrive in later releases.
 
 ## Run locally
 
 ```
 uv sync
-TOLLBOOTH_NOSTR_OPERATOR_NSEC=… uv run python -m taskqueue_mcp.server
+TOLLBOOTH_NOSTR_OPERATOR_NSEC=… uv run python -m taskbooth_mcp.server
 ```
 
 ## Test
@@ -31,10 +31,10 @@ uv run pytest
 
 ## Deploy
 
-The service runs on Prefect Horizon as the project `taskqueue-mcp`.
+The service runs on Prefect Horizon as the project `taskbooth-mcp`.
 Horizon builds from `fastmcp.json` and needs one secret, `TOLLBOOTH_NOSTR_OPERATOR_NSEC`.
 The Authority provisions the Neon database when it approves the adoption request.
-The BTCPay credentials arrive by Secure Courier: call `taskqueue_request_credential_channel`.
+The BTCPay credentials arrive by Secure Courier: call `taskbooth_request_credential_channel`.
 
 ## License
 
