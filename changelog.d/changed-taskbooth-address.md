@@ -1,1 +1,0 @@
-- Task Booth is served at `https://taskbooth-mcp.fastmcp.app`, a new Horizon project. Horizon gives a project its address once, at creation.

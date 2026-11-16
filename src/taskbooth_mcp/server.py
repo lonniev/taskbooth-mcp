@@ -191,8 +191,7 @@ TOOL_REGISTRY: dict[str, ToolIdentity] = {ti.tool_id: ti for ti in _DOMAIN_TOOLS
 runtime = OperatorRuntime(
     tool_registry={**STANDARD_IDENTITIES, **TOOL_REGISTRY},
     operator_credential_template=CredentialTemplate(
-        # The vault files the Operator's BTCPay credentials under this key; it changes only with a redelivery.
-        service="taskqueue-operator",
+        service="taskbooth-operator",
         version=1,
         description="Operator credentials for BTCPay Lightning payments",
         fields={

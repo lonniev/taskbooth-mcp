@@ -37,24 +37,8 @@ class SqliteNeon:
         sql = re.sub(r"CREATE INDEX IF NOT EXISTS (\w+) ON op\.", r"CREATE INDEX IF NOT EXISTS op.\1 ON ", sql)
         return re.sub(r"\$(\d+)", r"?\1", sql)
 
-    def _has(self, kind: str, name: str) -> bool:
-        return bool(self.db.execute("SELECT 1 FROM op.sqlite_master WHERE type = ? AND name = ?", [kind, name]).fetchone())
-
-    def _alter_if_exists(self, sql: str) -> bool:
-        """Postgres renames a table or index only if it exists; SQLite has no such clause, so do it here."""
-        m = re.fullmatch(r"ALTER (TABLE|INDEX) IF EXISTS op\.(\w+) RENAME TO (\w+)", sql.strip())
-        if not m:
-            return False
-        kind, old, new = m.group(1).lower(), m.group(2), m.group(3)
-        if self._has(kind, old):
-            # SQLite cannot rename an index; dropping it lets the CREATE INDEX that follows remake it.
-            self.db.execute(f"ALTER TABLE op.{old} RENAME TO {new}" if kind == "table" else f"DROP INDEX op.{old}")
-        return True
-
     async def _execute(self, sql: str, params=None):
         self.sql.append(sql)
-        if self._alter_if_exists(sql):
-            return {"rows": []}
         try:
             cur = self.db.execute(self._translate(sql), params or [])
         except sqlite3.OperationalError as exc:
