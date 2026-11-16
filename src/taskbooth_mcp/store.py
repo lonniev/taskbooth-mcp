@@ -18,7 +18,9 @@ Three rules the SQL keeps:
   deletes an event.
 - There is no clock. A posted task past its needed-by time *reads* as expired,
   and a recurring task's next occurrence is created by the call that finishes
-  the current one, or by the first read that finds it expired.
+  the current one, or by the first read that finds it expired. A task whose
+  purchaser chose "cancel if missed" is closed as missed by the first read or
+  move after its deadline, the same way.
 """
 
 from __future__ import annotations
@@ -31,11 +33,14 @@ from typing import Any
 from taskbooth_mcp import feed
 from taskbooth_mcp.lifecycle import (
     EXPIRED,
+    LATE_KINDS,
     Action,
     Facts,
     Role,
     Standing,
     State,
+    days_late,
+    late_sats,
     next_needed_by,
     standing,
     step,
@@ -47,6 +52,12 @@ MAX_GRADES = 12
 MAX_GRADE_SATS = 100_000_000
 MAX_PEOPLE = 500
 MAX_SIGNATURE = 4096
+#: A purchaser may remind once a day and a half before the deadline, or after it.
+NUDGE_DUE_WINDOW = 2 * 86_400
+#: The least time between two reminders of one kind about one task.
+NUDGE_GAP = 12 * 3_600
+#: The task fields an edit may change, and nothing else.
+EDITABLE = ("title", "description", "rubric", "audience", "needed_by", "every_days", "late")
 
 _TASK_COLUMNS = (
     "task_id, purchaser_npub, performer_npub, state, final, needed_by, series_id, occurrence, "
@@ -120,6 +131,18 @@ def checked_rubric(rubric: Any) -> dict[str, Any]:
     if len(set(names)) != len(names):
         raise ValueError("Two grades in a rubric cannot share a name.")
     return {"grades": checked, "appeal": _text(rubric.get("appeal", ""), "appeal rule", 500)}
+
+
+def checked_late(value: Any) -> dict[str, Any]:
+    """What happens when the task is done late: pay in full, a percentage off each day, or cancel."""
+    if value is None or value == {}:
+        return {"kind": "full"}
+    if not isinstance(value, dict) or value.get("kind") not in LATE_KINDS:
+        raise ValueError(f"The late rule is an object whose kind is one of: {', '.join(LATE_KINDS)}.")
+    if value["kind"] == "discount":
+        return {"kind": "discount", "pct_per_day": _whole(value.get("pct_per_day"), "percent off each day late",
+                                                          least=1, most=100)}
+    return {"kind": value["kind"]}
 
 
 def _grade(rubric: dict[str, Any], name: Any) -> tuple[dict[str, Any], bool]:
@@ -248,15 +271,64 @@ class TaskStore:
         view = {k: v for k, v in task.items() if k not in ("version", "rolled")}
         view["standing"] = standing(now, task["needed_by"], at)
         view["your_roles"] = sorted(r.value for r in roles)
+        view.setdefault("late", {"kind": "full"})
+        view["days_late"] = self._days_late(task, at)
+        view.setdefault("nudges", {})
         return view
+
+    @staticmethod
+    def _days_late(task: dict[str, Any], at: int) -> int:
+        """How late the work is or was: to when it was done, or to now while it is still being done.
+
+        A task nobody claimed is expired, not late; one cancelled or missed is
+        no longer anyone's work.
+        """
+        if task.get("accomplished_at"):
+            return days_late(task["needed_by"], int(task["accomplished_at"]))
+        if task["state"] == State.CLAIMED:
+            return days_late(task["needed_by"], at)
+        return 0
+
+    @staticmethod
+    def _wants_miss(task: dict[str, Any], at: int) -> bool:
+        """A cancel-if-missed task whose deadline passed before it was done."""
+        return bool(
+            (task.get("late") or {}).get("kind") == "cancel"
+            and task["state"] in (State.POSTED, State.CLAIMED)
+            and task["needed_by"] < at
+        )
+
+    async def _miss(self, task: dict[str, Any], at: int) -> None:
+        """Close a missed task, as the purchaser's own rule says. A lost race means someone else did it."""
+        now = step(Standing(State(task["state"]), task["final"]), Action.MISS, {Role.OPERATOR})
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        data.pop("nudges", None)
+        moved = await self._rows(
+            f"UPDATE {self._t('taskbooth_tasks')} SET state = $1, final = $2, data_enc = $3, "
+            "version = version + 1, updated_at = $4 WHERE task_id = $5 AND version = $6 RETURNING version",
+            [now.state.value, int(now.final), self._seal(data), at, task["task_id"], task["version"]],
+        )
+        if not moved:
+            return
+        # The purchaser's rule closed it, so the event names the purchaser.
+        await self._record(
+            task["task_id"], task["version"] + 1, at, task["purchaser"], Action.MISS.value,
+            task["state"], now.state.value, {},
+        )
 
     async def get(self, npub: str, task_id: str, at: int | None = None) -> dict[str, Any]:
         """The task as ``npub`` may see it, or :class:`NotYours`."""
+        at = int(time.time()) if at is None else at
         task = await self._load(task_id)
         roles = self._roles(task, npub) if task else frozenset()
         if task is None or not self._may_see(task, roles):
             raise NotYours(f"No task {task_id!r} is yours to see.")
-        return self._view(task, roles, int(time.time()) if at is None else at)
+        if self._wants_miss(task, at):
+            await self._miss(task, at)
+            task = await self._load(task_id) or task
+            if task["every_days"] and not task["rolled"]:
+                await self._recur(task, npub, at)
+        return self._view(task, roles, at)
 
     async def tasks_of(self, npub: str, at: int | None = None) -> list[dict[str, Any]]:
         """Every task ``npub`` posted, performs, grades, or may claim; soonest needed first.
@@ -274,9 +346,12 @@ class TaskStore:
                 [npub],
             )
             tasks = [self._task(r) for r in rows]
+            missed = [t for t in tasks if self._wants_miss(t, at)]
             stale = [t for t in tasks if self._wants_next(t, at)]
-            if not stale:
+            if not missed and not stale:
                 break
+            for task in missed:
+                await self._miss(task, at)
             for task in stale:
                 await self._recur(task, npub, at)
         seen = [(t, self._roles(t, npub)) for t in tasks]
@@ -317,11 +392,32 @@ class TaskStore:
         org_id: str = "",
         project_id: str = "",
         purchaser_signature: str = "",
+        late: dict[str, Any] | None = None,
         at: int | None = None,
     ) -> str:
         """Post a task. The purchaser may name themselves in the audience."""
         at = int(time.time()) if at is None else at
         purchaser = checked_npub(purchaser, "purchaser")
+        needed_by, data = self._terms(
+            purchaser, title=title, rubric=rubric, audience=audience, needed_by=needed_by,
+            description=description, earliest_start=earliest_start, every_days=every_days,
+            tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late, at=at,
+        )
+        task_id = new_id()
+        await self._insert(
+            task_id=task_id, purchaser=purchaser, needed_by=needed_by, series_id=task_id, occurrence=0,
+            org_id=_text(org_id, "Organization id", 64), project_id=_text(project_id, "Project id", 64),
+            data=data, actor=purchaser, action="post", at=at,
+        )
+        return task_id
+
+    @staticmethod
+    def _terms(
+        purchaser: str, *, title: Any, rubric: Any, audience: Any, needed_by: Any, description: Any,
+        earliest_start: Any, every_days: Any, tie_breaker: Any, assessors: Any, signature: Any,
+        late: Any, at: int,
+    ) -> tuple[int, dict[str, Any]]:
+        """A task's terms checked as a post or an edit hands them in: its needed-by time and sealed data."""
         if not isinstance(audience, list) or not 1 <= len(audience) <= MAX_PEOPLE:
             raise ValueError(f"A task names from 1 to {MAX_PEOPLE} npubs who may claim it.")
         delegates = assessors or []
@@ -334,7 +430,7 @@ class TaskStore:
         if earliest_start > needed_by:
             raise ValueError("The earliest-start time cannot be after the needed-by time.")
 
-        data = {
+        return needed_by, {
             "title": _text(title, "title", MAX_TITLE, required=True),
             "description": _text(description, "description", MAX_TEXT),
             "rubric": checked_rubric(rubric),
@@ -344,15 +440,9 @@ class TaskStore:
             "tie_breaker": checked_npub(tie_breaker, "tie-breaker") if tie_breaker else purchaser,
             "earliest_start": earliest_start,
             "every_days": _whole(every_days, "repeat interval in days", most=3660),
-            "signatures": {"purchaser": _text(purchaser_signature, "signature", MAX_SIGNATURE), "performer": ""},
+            "signatures": {"purchaser": _text(signature, "signature", MAX_SIGNATURE), "performer": ""},
+            "late": checked_late(late),
         }
-        task_id = new_id()
-        await self._insert(
-            task_id=task_id, purchaser=purchaser, needed_by=needed_by, series_id=task_id, occurrence=0,
-            org_id=_text(org_id, "Organization id", 64), project_id=_text(project_id, "Project id", 64),
-            data=data, actor=purchaser, action="post", at=at,
-        )
-        return task_id
 
     async def _insert(
         self, *, task_id: str, purchaser: str, needed_by: int, series_id: str, occurrence: int,
@@ -425,21 +515,35 @@ class TaskStore:
             roles = roles | {Role.OPERATOR}
         if task is None or not self._may_see(task, roles):
             raise NotYours(f"No task {task_id!r} is yours to see.")
+        if self._wants_miss(task, at):
+            await self._miss(task, at)
+            if task["every_days"] and not task["rolled"]:
+                await self._recur(await self._load(task_id) or task, npub, at)
+            raise ValueError("The deadline passed before this task was done, so it was cancelled as missed.")
 
         was = Standing(State(task["state"]), task["final"])
         reasons = _text(reasons, "reasons", MAX_TEXT)
         detail: dict[str, Any] = {"reasons": reasons} if reasons else {}
         facts = Facts(expired=standing(was, task["needed_by"], at) == EXPIRED)
+        late_off: dict[str, Any] = {}
         if action in (Action.ASSESS, Action.DECIDE_APPEAL):
             chosen, top = _grade(task["rubric"], grade)
-            facts = Facts(sats=chosen["sats"], top_grade=top)
-            detail |= {"grade": chosen["name"], "sats": chosen["sats"]}
+            sats = chosen["sats"]
+            rule = task.get("late") or {}
+            days = self._days_late(task, at)
+            if rule.get("kind") == "discount" and days:
+                sats = late_sats(chosen["sats"], int(rule["pct_per_day"]), days)
+                late_off = {"full_sats": chosen["sats"], "days_late": days,
+                            "pct_off": min(100, int(rule["pct_per_day"]) * days)}
+            facts = Facts(sats=sats, top_grade=top)
+            detail |= {"grade": chosen["name"], "sats": sats, **late_off}
         elif action is Action.ACCEPT:
             facts = Facts(sats=int((task.get("assessment") or {}).get("sats", 0)))
 
         now = step(was, action, roles, facts)  # raises ValueError on an illegal move
 
         data = {k: task[k] for k in self._sealed_keys(task)}
+        data.pop("nudges", None)  # a reminder is about the task as it stood; it moved on
         performer = task["performer"]
         match action:
             case Action.CLAIM:
@@ -458,7 +562,7 @@ class TaskStore:
             case Action.ASSESS:
                 data["assessment"] = {
                     "grade": detail["grade"], "sats": detail["sats"], "assessor": npub,
-                    "reasons": reasons, "at": at,
+                    "reasons": reasons, "at": at, **late_off,
                 }
             case Action.REJECT:
                 data["rejection"] = {"by": npub, "reasons": reasons, "at": at}
@@ -466,8 +570,9 @@ class TaskStore:
                 data["assessment"] = {**data["assessment"], "appeal": {"reasons": reasons, "at": at}}
             case Action.DECIDE_APPEAL:
                 first = data["assessment"]
+                kept = {k: v for k, v in first.items() if k not in ("full_sats", "days_late", "pct_off")}
                 data["assessment"] = {
-                    **first, "grade": detail["grade"], "sats": detail["sats"],
+                    **kept, "grade": detail["grade"], "sats": detail["sats"], **late_off,
                     "appeal": {
                         **first["appeal"], "first_grade": first["grade"], "first_sats": first["sats"],
                         "decided_by": npub, "decision_reasons": reasons, "decided_at": at,
@@ -547,14 +652,106 @@ class TaskStore:
         )
         return await self.get(purchaser, task_id, at)
 
+    # -- editing and reminding -----------------------------------------------
+
+    async def _bump(
+        self, task: dict[str, Any], data: dict[str, Any], at: int, actor: str, action: Action,
+        detail: dict[str, Any], *, needed_by: int | None = None,
+    ) -> None:
+        """Rewrite a task's sealed data (and needed-by time) without moving its state; one event."""
+        moved = await self._rows(
+            f"UPDATE {self._t('taskbooth_tasks')} SET data_enc = $1, needed_by = $2, version = version + 1, "
+            "updated_at = $3 WHERE task_id = $4 AND version = $5 RETURNING version",
+            [self._seal(data), task["needed_by"] if needed_by is None else needed_by, at,
+             task["task_id"], task["version"]],
+        )
+        if not moved:
+            raise ValueError("Someone else changed this task first. Read it again.")
+        await self._record(
+            task["task_id"], task["version"] + 1, at, actor, action.value, task["state"], task["state"], detail
+        )
+
+    async def edit(
+        self, purchaser: str, task_id: str, changes: dict[str, Any], signature: str = "",
+        at: int | None = None,
+    ) -> dict[str, Any]:
+        """Change a task's terms while nobody has claimed it. Only the purchaser may.
+
+        ``changes`` names any of :data:`EDITABLE`; each is checked as a post
+        checks it. The purchaser's signature was on the old terms, so it is
+        cleared unless a new one comes with the edit.
+        """
+        at = int(time.time()) if at is None else at
+        task = await self._load(task_id)
+        roles = self._roles(task, purchaser) if task else frozenset()
+        if task is None or Role.PURCHASER not in roles:
+            raise NotYours(f"No task {task_id!r} is yours to edit.")
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("Say what to change: any of " + ", ".join(EDITABLE) + ".")
+        unknown = sorted(set(changes) - set(EDITABLE))
+        if unknown:
+            raise ValueError(f"These cannot be edited: {', '.join(unknown)}. Editable: {', '.join(EDITABLE)}.")
+        step(Standing(State(task["state"]), task["final"]), Action.EDIT, roles)
+
+        merged = {k: changes.get(k, task.get(k)) for k in EDITABLE}
+        needed_by, terms = self._terms(
+            task["purchaser"], title=merged["title"], rubric=merged["rubric"], audience=merged["audience"],
+            needed_by=merged["needed_by"], description=merged["description"],
+            earliest_start=min(task["earliest_start"], merged["needed_by"]) if isinstance(merged["needed_by"], int)
+            else task["earliest_start"],
+            every_days=merged["every_days"], tie_breaker=task["tie_breaker"],
+            assessors=[n for n in task["assessors"] if n != task["purchaser"]],
+            signature=signature, late=merged["late"], at=at,
+        )
+        data = {k: task[k] for k in self._sealed_keys(task)} | terms
+        data.pop("nudges", None)
+        await self._bump(task, data, at, purchaser, Action.EDIT, {"changed": sorted(changes)}, needed_by=needed_by)
+        if "audience" in changes:
+            await self._neon._execute(
+                f"DELETE FROM {self._t('taskbooth_people')} WHERE task_id = $1 AND role = $2",
+                [task_id, Role.AUDIENCE.value],
+            )
+            for npub in data["audience"]:
+                await self._neon._execute(
+                    f"INSERT INTO {self._t('taskbooth_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
+                    "ON CONFLICT (task_id, npub, role) DO NOTHING",
+                    [task_id, npub, Role.AUDIENCE.value],
+                )
+        return await self.get(purchaser, task_id, at)
+
+    async def nudge(self, npub: str, task_id: str, kind: str, at: int | None = None) -> dict[str, Any]:
+        """Remind the other side of a task: ``pay`` (the performer asks to be paid) or ``due``
+        (the purchaser says the deadline is near, or past). It changes nothing else, and one of
+        each kind may be sent per task every :data:`NUDGE_GAP` seconds.
+        """
+        at = int(time.time()) if at is None else at
+        actions = {"pay": Action.NUDGE_PAY, "due": Action.NUDGE_DUE}
+        if kind not in actions:
+            raise ValueError("A reminder is 'pay' or 'due'.")
+        task = await self._load(task_id)
+        roles = self._roles(task, npub) if task else frozenset()
+        if task is None or not self._may_see(task, roles):
+            raise NotYours(f"No task {task_id!r} is yours to see.")
+        step(Standing(State(task["state"]), task["final"]), actions[kind], roles)
+        if kind == "due" and task["needed_by"] - at > NUDGE_DUE_WINDOW:
+            raise ValueError("A reminder that it is due can be sent from two days before the deadline.")
+        sent = dict(task.get("nudges") or {})
+        last = (sent.get(kind) or {}).get("at", 0)
+        if at - int(last) < NUDGE_GAP:
+            raise ValueError("A reminder was sent less than 12 hours ago.")
+        sent[kind] = {"by": npub, "at": at}
+        data = {k: task[k] for k in self._sealed_keys(task)} | {"nudges": sent}
+        await self._bump(task, data, at, npub, actions[kind], {})
+        return await self.get(npub, task_id, at)
+
     # -- recurrence ----------------------------------------------------------
 
     @staticmethod
     def _wants_next(task: dict[str, Any], at: int) -> bool:
-        """A recurring task nobody claimed in time, whose next occurrence is not yet made."""
+        """A recurring task nobody claimed in time, or one missed, whose next occurrence is not yet made."""
         return bool(
             task["every_days"] and not task["rolled"]
-            and task["state"] == State.POSTED and task["needed_by"] < at
+            and (task["state"] == State.MISSED or (task["state"] == State.POSTED and task["needed_by"] < at))
         )
 
     async def _recur(self, task: dict[str, Any], actor: str, at: int) -> None:
@@ -564,6 +761,7 @@ class TaskStore:
         data = {k: task[k] for k in (
             "title", "description", "rubric", "audience", "assessors", "tie_breaker", "every_days",
         )}
+        data["late"] = task.get("late") or {"kind": "full"}
         data["earliest_start"] = task["earliest_start"] + shift if task["earliest_start"] else 0
         data["signatures"] = {"purchaser": task["signatures"]["purchaser"], "performer": ""}
         await self._insert(

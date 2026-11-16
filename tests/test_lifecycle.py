@@ -16,7 +16,9 @@ from taskbooth_mcp.lifecycle import (
     Role,
     Standing,
     State,
+    days_late,
     is_finished,
+    late_sats,
     next_needed_by,
     standing,
     step,
@@ -38,6 +40,11 @@ LEGAL: dict[tuple[State, Action, Role], Standing] = {
     (State.APPEALED, Action.DECIDE_APPEAL, Role.TIE_BREAKER): Standing(State.OWED, final=True),
     (State.OWED, Action.CONFIRM_PAID, Role.PERFORMER): Standing(State.PAID, final=True),
     (State.OWED, Action.RECORD_PAYMENT, Role.OPERATOR): Standing(State.PAID, final=True),
+    (State.POSTED, Action.MISS, Role.OPERATOR): Standing(State.MISSED, final=True),
+    (State.CLAIMED, Action.MISS, Role.OPERATOR): Standing(State.MISSED, final=True),
+    (State.POSTED, Action.EDIT, Role.PURCHASER): Standing(State.POSTED),
+    (State.OWED, Action.NUDGE_PAY, Role.PERFORMER): Standing(State.OWED),
+    (State.CLAIMED, Action.NUDGE_DUE, Role.PURCHASER): Standing(State.CLAIMED),
 }
 SOME_SATS = Facts(sats=800)
 
@@ -170,3 +177,25 @@ class TestRecurrence:
     def test_an_interval_shorter_than_a_day_is_refused(self):
         with pytest.raises(ValueError):
             next_needed_by(1000, 0, at=0)
+
+
+def test_a_missed_task_is_finished():
+    assert is_finished(Standing(State.MISSED, final=True))
+
+
+def test_days_late_counts_any_part_of_a_day_as_one():
+    due = 1_800_000_000
+    assert days_late(due, due) == 0
+    assert days_late(due, due - 5) == 0
+    assert days_late(due, due + 1) == 1
+    assert days_late(due, due + DAY) == 1
+    assert days_late(due, due + DAY + 1) == 2
+
+
+def test_late_sats_take_a_share_off_each_day_and_never_go_below_zero():
+    assert late_sats(1000, 10, 0) == 1000
+    assert late_sats(1000, 10, 2) == 800
+    assert late_sats(999, 10, 1) == 899  # rounded down: the purchaser never owes a part of a sat more
+    assert late_sats(1000, 60, 2) == 0
+    assert late_sats(1000, 100, 1) == 0
+    assert late_sats(0, 10, 3) == 0

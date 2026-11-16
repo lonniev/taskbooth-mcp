@@ -27,7 +27,7 @@ UID_DOMAIN = "taskbooth.tollbooth-dpyc.com"
 MAX_FEEDS = 5
 
 #: Standings left off a calendar: nobody has anything left to do on these.
-_GONE = frozenset({"withdrawn", "rejected", "expired"})
+_GONE = frozenset({"withdrawn", "rejected", "expired", "missed"})
 #: Standings shown as finished.
 _FINISHED = frozenset({"owed", "paid"})
 

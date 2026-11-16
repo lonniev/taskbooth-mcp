@@ -121,6 +121,8 @@ CALENDAR_PUBLISH_UUID = "d58d1de3-9455-46cf-ad9f-cc63f063e0de"
 CALENDAR_FETCH_UUID = "e91b5e42-a7ce-4a07-a7a3-2948f25fb534"
 CALENDAR_LIST_UUID = "a2a11111-6c18-4c91-a80e-dd39385321b5"
 CALENDAR_REVOKE_UUID = "e0fe233b-2b79-4902-8429-f956b0d766dc"
+EDIT_TASK_UUID = "9621461f-699c-4a6d-96c3-7f2c9278a9ba"
+NUDGE_TASK_UUID = "d1a006a3-4b43-447c-82e3-97ca2229651f"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -132,6 +134,10 @@ def _identity(tool_id: str, capability: str, category: str, title: str, behavior
 _DOMAIN_TOOLS: list[ToolIdentity] = [
     _identity(POST_TASK_UUID, "post_task", "write", "Post a task", CREATES,
               "Post a task with its rubric, its audience and a needed-by time"),
+    _identity(EDIT_TASK_UUID, "edit_task", "write", "Edit a task", WRITES,
+              "Change a posted task's terms while nobody has claimed it"),
+    _identity(NUDGE_TASK_UUID, "nudge_task", "write", "Send a reminder", WRITES,
+              "Remind the purchaser to pay, or the performer that the deadline is near"),
     _identity(LIST_TASKS_UUID, "list_tasks", "read", "List tasks", READS,
               "Every task the caller posted, performs, grades or may claim"),
     _identity(GET_TASK_UUID, "get_task", "read", "Get a task", READS,
@@ -281,6 +287,7 @@ async def post_task(
     org_id: str = "",
     project_id: str = "",
     signature: str = "",
+    late: dict[str, Any] | None = None,
     npub: PatronNpub = "",
 ) -> dict[str, Any]:
     """Post a task for others (or yourself) to claim.
@@ -301,15 +308,69 @@ async def post_task(
         org_id: Your Purser Organization, if this is its work.
         project_id: The Purser Project it belongs to.
         signature: Your signature on the offer, when your client makes one.
+        late: What happens if it is done after needed_by. {"kind": "full"} pays in full (the default);
+            {"kind": "discount", "pct_per_day": 10} takes 10% off the grade for each day late, never
+            below zero; {"kind": "cancel"} closes it as missed once needed_by passes undone.
     """
     db = await store()
     task_id = await db.post(
         runtime.resolve_npub(npub), title=title, rubric=rubric, audience=audience, needed_by=needed_by,
         description=description, earliest_start=earliest_start, every_days=every_days,
         tie_breaker=tie_breaker, assessors=assessors, org_id=org_id, project_id=project_id,
-        purchaser_signature=signature,
+        purchaser_signature=signature, late=late,
     )
     return {"ok": True, "task": await db.get(runtime.resolve_npub(npub), task_id)}
+
+
+@tool
+@runtime.paid_tool(EDIT_TASK_UUID)
+async def edit_task(
+    task_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    rubric: dict[str, Any] | None = None,
+    audience: list[str] | None = None,
+    needed_by: int | None = None,
+    every_days: int | None = None,
+    late: dict[str, Any] | None = None,
+    signature: str = "",
+    npub: PatronNpub = "",
+) -> dict[str, Any]:
+    """Change a task you posted while nobody has claimed it. Give only what changes.
+
+    Once someone claims it, its terms are what they agreed to and cannot change.
+    Each value is checked as post_task checks it. Your signature on the old terms
+    is cleared unless you sign the new ones.
+
+    Args:
+        task_id: The task.
+        title, description, rubric, audience, needed_by, every_days, late: As in post_task.
+        signature: Your signature on the changed offer, when your client makes one.
+    """
+    given = {"title": title, "description": description, "rubric": rubric, "audience": audience,
+             "needed_by": needed_by, "every_days": every_days, "late": late}
+    changes = {k: v for k, v in given.items() if v is not None}
+    db = await store()
+    task = await _do(db.edit(runtime.resolve_npub(npub), str(task_id), changes, signature=signature))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(NUDGE_TASK_UUID)
+async def nudge_task(task_id: str, kind: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Send the other side of a task a reminder they see the next time they look.
+
+    "pay": the performer of an owed task asks the purchaser to pay.
+    "due": the purchaser tells the performer the deadline is near (within two days) or past.
+    One of each kind per task every 12 hours. It changes nothing else about the task.
+
+    Args:
+        task_id: The task.
+        kind: "pay" or "due".
+    """
+    db = await store()
+    task = await _do(db.nudge(runtime.resolve_npub(npub), str(task_id), str(kind)))
+    return {"ok": True, "task": task}
 
 
 @tool

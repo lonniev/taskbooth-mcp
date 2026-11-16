@@ -8,7 +8,7 @@ says where the task stands, what someone wants to do, and which roles that
 someone holds; :func:`step` answers with where the task stands afterwards, or
 raises ``ValueError`` with a sentence a person can read.
 
-Three things the arrows above leave out:
+Four things the arrows above leave out:
 
 - **Expired** is never stored. A posted task whose needed-by time has passed
   reads as expired (:func:`standing`), and nothing runs in the background to
@@ -16,6 +16,9 @@ Three things the arrows above leave out:
 - An assessment starts **provisional**: the performer accepts it or appeals it
   once. It becomes **final** on acceptance, on the tie-breaker's decision, or at
   once when the grade is the rubric's top grade, which leaves nothing to appeal.
+- **Missed**: a task whose purchaser chose "cancel if missed" closes itself when
+  its needed-by time passes before it is done. Like expired, nothing in the
+  background does it; the first read after the deadline records it.
 - A final assessment worth sats is **Owed** until it is paid. One worth zero
   sats stays Assessed, final, with nothing to pay. That is a finished task, and
   it is different from Rejected.
@@ -31,12 +34,15 @@ from enum import StrEnum
 
 __all__ = [
     "EXPIRED",
+    "LATE_KINDS",
     "Action",
     "Facts",
     "Role",
     "Standing",
     "State",
+    "days_late",
     "is_finished",
+    "late_sats",
     "next_needed_by",
     "standing",
     "step",
@@ -53,6 +59,7 @@ class State(StrEnum):
     PAID = "paid"
     REJECTED = "rejected"
     WITHDRAWN = "withdrawn"
+    MISSED = "missed"
 
 
 #: How a posted task reads once its needed-by time has passed. Never stored.
@@ -65,7 +72,7 @@ class Role(StrEnum):
     PERFORMER = "performer"      # claimed it
     ASSESSOR = "assessor"        # the purchaser, or someone they delegated grading to
     TIE_BREAKER = "tie_breaker"  # named in the rubric; decides an appeal
-    OPERATOR = "operator"        # this service, recording a payment a wallet proved
+    OPERATOR = "operator"        # this service: recording a proved payment, closing a missed task
 
 
 class Action(StrEnum):
@@ -80,6 +87,10 @@ class Action(StrEnum):
     DECIDE_APPEAL = "decide_appeal"
     CONFIRM_PAID = "confirm_paid"
     RECORD_PAYMENT = "record_payment"
+    MISS = "miss"
+    EDIT = "edit"
+    NUDGE_PAY = "nudge_pay"
+    NUDGE_DUE = "nudge_due"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +134,14 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.APPEALED, Action.DECIDE_APPEAL): frozenset({Role.TIE_BREAKER}),
     (State.OWED, Action.CONFIRM_PAID): frozenset({Role.PERFORMER}),
     (State.OWED, Action.RECORD_PAYMENT): frozenset({Role.OPERATOR}),
+    (State.POSTED, Action.MISS): frozenset({Role.OPERATOR}),
+    (State.CLAIMED, Action.MISS): frozenset({Role.OPERATOR}),
+    # The terms may change only while nobody has agreed to them.
+    (State.POSTED, Action.EDIT): frozenset({Role.PURCHASER}),
+    # Reminders change nothing: the performer asks to be paid, the purchaser
+    # says a deadline is near.
+    (State.OWED, Action.NUDGE_PAY): frozenset({Role.PERFORMER}),
+    (State.CLAIMED, Action.NUDGE_DUE): frozenset({Role.PURCHASER}),
 }
 
 
@@ -169,6 +188,10 @@ def step(
             return Standing(State.APPEALED)
         case Action.CONFIRM_PAID | Action.RECORD_PAYMENT:
             return Standing(State.PAID, final=True)
+        case Action.MISS:
+            return Standing(State.MISSED, final=True)
+        case Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE:
+            return now
     raise ValueError(f"Unknown action '{action}'.")  # pragma: no cover — the enum is closed
 
 
@@ -180,7 +203,7 @@ def _reads_as(now: Standing) -> str:
 
 def is_finished(now: Standing) -> bool:
     """True when nothing more can happen to the task."""
-    if now.state in (State.PAID, State.REJECTED, State.WITHDRAWN):
+    if now.state in (State.PAID, State.REJECTED, State.WITHDRAWN, State.MISSED):
         return True
     return now.state is State.ASSESSED and now.final
 
@@ -203,3 +226,28 @@ def next_needed_by(needed_by: int, every_days: int, at: int) -> int:
     interval = every_days * 86_400
     missed = max(0, (at - needed_by) // interval)
     return needed_by + (missed + 1) * interval
+
+
+#: What a purchaser may say happens when a task is done late: pay in full, take
+#: a percentage off for each day late, or cancel it once the deadline passes.
+LATE_KINDS = ("full", "discount", "cancel")
+
+_DAY = 86_400
+
+
+def days_late(needed_by: int, at: int) -> int:
+    """Whole days past the needed-by time, counting any part of a day as one.
+
+    A needed-by time is the end of the chosen day in the purchaser's own zone,
+    so one second past it is the next day, a day late, wherever they live.
+    """
+    over = at - needed_by
+    return 0 if over <= 0 else -(-over // _DAY)
+
+
+def late_sats(sats: int, pct_per_day: int, days: int) -> int:
+    """What a grade earns after ``pct_per_day`` comes off for each of ``days`` late; never below zero."""
+    if days <= 0 or pct_per_day <= 0:
+        return sats
+    kept = max(0, 100 - pct_per_day * days)
+    return sats * kept // 100
