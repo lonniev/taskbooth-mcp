@@ -159,22 +159,7 @@ class TaskStore:
         opened = json.loads(self._cipher.decrypt(sealed))
         return opened if isinstance(opened, dict) else {}
 
-    #: Tables and indexes made under this Operator's first name, and what each is called now.
-    _RENAMED_TABLES = ("tasks", "people", "events", "payouts", "rubric_templates", "feeds")
-    _RENAMED_INDEXES = ("tasks_purchaser", "tasks_performer", "people_npub", "templates_owner", "feeds_owner")
-
-    async def _rename_from_first_name(self) -> None:
-        """Carry the tables over from the name this Operator was born with. A no-op once done."""
-        was = "task" + "queue"
-        for table in self._RENAMED_TABLES:
-            await self._neon._execute(
-                f"ALTER TABLE IF EXISTS {self._t(f'{was}_{table}')} RENAME TO taskbooth_{table}", [])
-        for index in self._RENAMED_INDEXES:
-            await self._neon._execute(
-                f"ALTER INDEX IF EXISTS {self._t(f'idx_{was}_{index}')} RENAME TO idx_taskbooth_{index}", [])
-
     async def ensure_schema(self) -> None:
-        await self._rename_from_first_name()
         for sql in (
             (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_tasks')} ("
              "task_id TEXT PRIMARY KEY, purchaser_npub TEXT NOT NULL, performer_npub TEXT, "

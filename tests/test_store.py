@@ -145,7 +145,7 @@ async def test_events_are_only_ever_inserted(queue, family):
     task = await _post(db, family)
     await _to_done(db, family, task)
     await db.act(family["parent"], task, Action.REJECT, reasons="Not done at all", at=NOW + 30)
-    touching = [s for s in neon.sql if "taskbooth_events" in s and not s.startswith(("CREATE", "SELECT", "ALTER TABLE IF EXISTS"))]
+    touching = [s for s in neon.sql if "taskbooth_events" in s and not s.startswith(("CREATE", "SELECT"))]
     assert touching and all(s.startswith("INSERT INTO") for s in touching)
 
 
@@ -412,32 +412,3 @@ async def test_a_rubric_template_is_kept_replaced_and_private_to_its_owner(queue
     with pytest.raises(NotYours):
         await db.save_template(family["child"], "Mine now", RUBRIC, kept)
 
-
-# ---------------------------------------------------------------------------
-# The tables carry over from the Operator's first name
-# ---------------------------------------------------------------------------
-
-FIRST = "task" + "queue"
-
-
-async def test_tables_made_under_the_first_name_are_renamed_with_their_rows():
-    neon = SqliteNeon(cipher=VaultCipher(nsec_hex=PrivateKey().hex()))
-    neon.db.execute(f"CREATE TABLE op.{FIRST}_payouts (task_id TEXT PRIMARY KEY, paid_at BIGINT, data_enc TEXT NOT NULL)")
-    neon.db.execute(f"INSERT INTO op.{FIRST}_payouts VALUES ('t1', NULL, 'sealed')")
-    neon.db.execute(f"CREATE TABLE op.{FIRST}_people (task_id TEXT NOT NULL, npub TEXT NOT NULL, role TEXT NOT NULL)")
-    neon.db.execute(f"CREATE INDEX op.idx_{FIRST}_people_npub ON {FIRST}_people(npub)")
-
-    await TaskStore(neon).ensure_schema()
-
-    assert not any(FIRST in name for name in neon.tables())
-    assert neon.rows("taskbooth_payouts") == [{"task_id": "t1", "paid_at": None, "data_enc": "sealed"}]
-    assert {"taskbooth_tasks", "taskbooth_people", "taskbooth_feeds"} <= neon.tables()
-
-
-async def test_renaming_is_a_no_op_on_a_fresh_store_and_on_every_later_start():
-    neon = SqliteNeon(cipher=VaultCipher(nsec_hex=PrivateKey().hex()))
-    store = TaskStore(neon)
-    await store.ensure_schema()
-    before = neon.tables()
-    await store.ensure_schema()
-    assert neon.tables() == before and not any(FIRST in name for name in before)
