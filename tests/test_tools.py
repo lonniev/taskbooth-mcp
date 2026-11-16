@@ -602,3 +602,23 @@ async def test_a_person_keeps_a_handful_of_feeds_at_most(anyone, queue, wallets)
         assert (await feed_of(CHILD, name=f"Feed {i}"))["ok"]
     refused = await feed_of(CHILD, name="One more")
     assert not refused["success"] and "revoke one first" in refused["error"]
+
+
+async def test_a_parent_edits_an_open_chore_and_the_child_reminds_them_to_pay(billing, queue, wallets):
+    task = await post(late={"kind": "discount", "pct_per_day": 10})
+    edited = await call("edit_task", task_id=task, title="Clean your room and the hall", npub=PARENT)
+    assert edited["ok"] and edited["task"]["title"] == "Clean your room and the hall"
+    assert edited["task"]["late"] == {"kind": "discount", "pct_per_day": 10}
+    refused = await call("edit_task", task_id=task, title="Mine", npub=CHILD)
+    assert not refused.get("ok")
+    await done(task)
+    assert (await call("assess_task", task_id=task, grade="Spotless", npub=PARENT))["ok"]
+    nudged = await call("nudge_task", task_id=task, kind="pay", npub=CHILD)
+    assert nudged["ok"] and nudged["task"]["nudges"]["pay"]["by"] == CHILD
+
+
+async def test_a_bad_late_rule_is_refused_at_posting(billing, queue, wallets):
+    result = await call("post_task", title="Rake leaves", rubric=RUBRIC, audience=[CHILD],
+                        needed_by=int(time.time()) + DAY, late={"kind": "discount", "pct_per_day": 500},
+                        npub=PARENT)
+    assert not result.get("ok")

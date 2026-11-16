@@ -1,0 +1,4 @@
+- A task carries a late rule: pay in full, take a percentage off the grade for each day late (never below zero), or cancel it if missed. Graded late work under a discount says what it would have earned and why it earns less.
+- A cancel-if-missed task closes itself as **missed** on the first read after its deadline; a repeating one then comes back once. Every task says how many days late its work is or was.
+- `edit_task` changes a posted task's terms while nobody has claimed it; the purchaser's old signature is cleared.
+- `nudge_task` lets the performer of an owed task remind the purchaser to pay, and the purchaser remind the performer a deadline is near (two days) or past; one of each per task every 12 hours.
