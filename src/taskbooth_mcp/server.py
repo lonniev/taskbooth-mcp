@@ -46,8 +46,7 @@ from taskbooth_mcp.store import NotYours, TaskStore
 logger = logging.getLogger(__name__)
 
 #: The Horizon project's own URL. The holder connection's OAuth endpoints live here.
-# Horizon still serves this Operator at the address it was created with.
-SERVICE_URL = "https://taskqueue-mcp.fastmcp.app"
+SERVICE_URL = "https://taskbooth-mcp.fastmcp.app"
 
 mcp = FastMCP(
     "taskbooth-mcp",
