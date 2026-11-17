@@ -76,6 +76,10 @@ mcp = FastMCP(
         "taskbooth_set_my_property) when they have one. A performer without one makes an "
         "invoice for that amount in their own wallet and passes it as invoice.\n"
         "7. The performer calls taskbooth_confirm_paid when the sats arrive.\n\n"
+        "A task posted with deposit_pct asks for that share of its top grade once it is "
+        "claimed. taskbooth_request_deposit returns the invoice, the purchaser pays it, and "
+        "the performer calls taskbooth_confirm_deposit. The award then pays only what the "
+        "grade earns beyond the deposit.\n\n"
         "taskbooth_calendar_publish mints a calendar feed of your tasks for a phone's "
         "calendar app; taskbooth_calendar_list and taskbooth_calendar_revoke manage it.\n\n"
         "taskbooth_list_tasks shows every task you have a part in; taskbooth_get_task "
@@ -123,6 +127,8 @@ CALENDAR_LIST_UUID = "a2a11111-6c18-4c91-a80e-dd39385321b5"
 CALENDAR_REVOKE_UUID = "e0fe233b-2b79-4902-8429-f956b0d766dc"
 EDIT_TASK_UUID = "9621461f-699c-4a6d-96c3-7f2c9278a9ba"
 NUDGE_TASK_UUID = "d1a006a3-4b43-447c-82e3-97ca2229651f"
+REQUEST_DEPOSIT_UUID = "771d7242-dcdd-466b-ba61-f9c06d18a547"
+CONFIRM_DEPOSIT_UUID = "118e4115-a77d-4569-9162-e62a81ce6088"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -166,6 +172,10 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Let another npub grade a task for the purchaser"),
     _identity(REQUEST_PAYOUT_UUID, "request_payout", "write", "Request the payout invoice", WRITES_REMOTE,
               "The Lightning invoice that pays an owed task"),
+    _identity(REQUEST_DEPOSIT_UUID, "request_deposit", "write", "Request the deposit invoice", WRITES_REMOTE,
+              "The Lightning invoice that pays a claimed task's deposit"),
+    _identity(CONFIRM_DEPOSIT_UUID, "confirm_deposit", "write", "Confirm the deposit", WRITES,
+              "Say the sats for a claimed task's deposit arrived"),
     _identity(CONFIRM_PAID_UUID, "confirm_paid", "write", "Confirm payment", WRITES,
               "Say the sats for an owed task arrived"),
     _identity(SAVE_RUBRIC_TEMPLATE_UUID, "save_rubric_template", "write", "Save a rubric template", WRITES,
@@ -288,6 +298,7 @@ async def post_task(
     project_id: str = "",
     signature: str = "",
     late: dict[str, Any] | None = None,
+    deposit_pct: int = 0,
     npub: PatronNpub = "",
 ) -> dict[str, Any]:
     """Post a task for others (or yourself) to claim.
@@ -311,13 +322,15 @@ async def post_task(
         late: What happens if it is done after needed_by. {"kind": "full"} pays in full (the default);
             {"kind": "discount", "pct_per_day": 10} takes 10% off the grade for each day late, never
             below zero; {"kind": "cancel"} closes it as missed once needed_by passes undone.
+        deposit_pct: The share of the top grade, 0 to 90 percent, paid to the performer when they
+            claim it. The award later pays only what the grade earns beyond it. 0 asks for none.
     """
     db = await store()
     task_id = await db.post(
         runtime.resolve_npub(npub), title=title, rubric=rubric, audience=audience, needed_by=needed_by,
         description=description, earliest_start=earliest_start, every_days=every_days,
         tie_breaker=tie_breaker, assessors=assessors, org_id=org_id, project_id=project_id,
-        purchaser_signature=signature, late=late,
+        purchaser_signature=signature, late=late, deposit_pct=deposit_pct,
     )
     return {"ok": True, "task": await db.get(runtime.resolve_npub(npub), task_id)}
 
@@ -333,6 +346,7 @@ async def edit_task(
     needed_by: int | None = None,
     every_days: int | None = None,
     late: dict[str, Any] | None = None,
+    deposit_pct: int | None = None,
     signature: str = "",
     npub: PatronNpub = "",
 ) -> dict[str, Any]:
@@ -344,11 +358,11 @@ async def edit_task(
 
     Args:
         task_id: The task.
-        title, description, rubric, audience, needed_by, every_days, late: As in post_task.
+        title, description, rubric, audience, needed_by, every_days, late, deposit_pct: As in post_task.
         signature: Your signature on the changed offer, when your client makes one.
     """
     given = {"title": title, "description": description, "rubric": rubric, "audience": audience,
-             "needed_by": needed_by, "every_days": every_days, "late": late}
+             "needed_by": needed_by, "every_days": every_days, "late": late, "deposit_pct": deposit_pct}
     changes = {k: v for k, v in given.items() if v is not None}
     db = await store()
     task = await _do(db.edit(runtime.resolve_npub(npub), str(task_id), changes, signature=signature))
@@ -593,6 +607,46 @@ async def request_payout(task_id: str, invoice: str = "", npub: PatronNpub = "")
         return {"ok": True, "payout": await payout.invoice_from_performer(db, task, invoice, performer=me)}
     address = await payout_address_of(task["performer"])
     return {"ok": True, "payout": await payout.invoice_for(db, task, address, requested_by=me)}
+
+
+@tool
+@runtime.paid_tool(REQUEST_DEPOSIT_UUID)
+async def request_deposit(task_id: str, invoice: str = "", npub: PatronNpub = "") -> dict[str, Any]:
+    """The Lightning invoice that pays a claimed task's deposit, for exactly the deposit's sats.
+
+    The purchaser pays it from any wallet; the sats go straight to the performer.
+    Asking again returns the same invoice until it expires, then a fresh one.
+    The performer calls taskbooth_confirm_deposit once the sats arrive.
+
+    The invoice is fetched from the performer's payout_address when they have
+    one. A performer without one makes an invoice for exactly the deposit in
+    their own wallet and passes it here as invoice.
+
+    Args:
+        task_id: A claimed task, with a deposit, that you posted or performed.
+        invoice: The performer's own BOLT11 invoice for exactly the deposit. Only the performer passes one.
+    """
+    me = runtime.resolve_npub(npub)
+    db = await store()
+    task = await _do(db.deposit_task(me, str(task_id)))
+    if invoice and me != task["performer"]:
+        raise ValueError("Only the performer may hand in their own invoice.")
+    address = "" if invoice else await payout_address_of(task["performer"])
+    made = await payout.deposit_invoice(db, task, address=address, invoice=invoice, requested_by=me)
+    return {"ok": True, "deposit": made}
+
+
+@tool
+@runtime.paid_tool(CONFIRM_DEPOSIT_UUID)
+async def confirm_deposit(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Say the deposit arrived. Only the performer, for a deposit invoiced here.
+
+    Args:
+        task_id: A claimed or done task you perform.
+    """
+    db = await store()
+    task = await _do(db.confirm_deposit(runtime.resolve_npub(npub), str(task_id)))
+    return {"ok": True, "task": task}
 
 
 # ---------------------------------------------------------------------------
