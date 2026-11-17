@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.2.1] — 2026-11-17
+
+### Fixed
+
+- `service_status` reports the released version again; it had stayed at 0.1.0 after the 0.2.0 release.
+
 ## [0.2.0] — 2026-11-17
 
 ### Added
