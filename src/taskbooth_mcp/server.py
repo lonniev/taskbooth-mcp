@@ -359,6 +359,7 @@ async def post_task(
     deposit_pct: int = 0,
     cover: dict[str, Any] | None = None,
     milestones: list[dict[str, Any]] | None = None,
+    site: str = "",
     npub: PatronNpub = "",
 ) -> dict[str, Any]:
     """Post a task for others (or yourself) to claim.
@@ -394,6 +395,8 @@ async def post_task(
         milestones: Dated part-payments of the top grade, up to 6:
             [{"name": "Halfway", "due_at": <Unix seconds>, "pct": 45}]. With deposit_pct they ask for
             at most 90%. Each is payable from its date, and the award pays only what is left.
+        site: The site posting it, a short lowercase name such as "chipin". A site lists its own tasks
+            and every task posted with no site (taskbooth_list_tasks). Omit for none.
     """
     db = await store()
     task_id = await db.post(
@@ -401,6 +404,7 @@ async def post_task(
         description=description, earliest_start=earliest_start, every_days=every_days,
         tie_breaker=tie_breaker, assessors=assessors, org_id=org_id, project_id=project_id,
         purchaser_signature=signature, late=late, deposit_pct=deposit_pct, cover=cover, milestones=milestones,
+        site=site,
     )
     return {"ok": True, "task": await db.get(runtime.resolve_npub(npub), task_id)}
 
@@ -463,10 +467,14 @@ async def nudge_task(task_id: str, kind: str, npub: PatronNpub = "") -> dict[str
 
 @tool
 @runtime.paid_tool(LIST_TASKS_UUID)
-async def list_tasks(npub: PatronNpub = "") -> dict[str, Any]:
+async def list_tasks(site: str = "", npub: PatronNpub = "") -> dict[str, Any]:
     """Every task you posted, perform, grade, or may claim, and every task filed in your Organizations'
-    Projects; soonest needed first. Each task's org_id and project_id say where it is filed."""
-    return {"ok": True, "tasks": await (await store()).tasks_of(runtime.resolve_npub(npub))}
+    Projects; soonest needed first. Each task's org_id and project_id say where it is filed.
+
+    Args:
+        site: Only that site's tasks and those posted with no site. Omit for every task.
+    """
+    return {"ok": True, "tasks": await _do((await store()).tasks_of(runtime.resolve_npub(npub), site=site))}
 
 
 @tool
@@ -1031,7 +1039,7 @@ async def get_project(project_id: str, npub: PatronNpub = "") -> dict[str, Any]:
 
 @tool
 @runtime.paid_tool(CALENDAR_PUBLISH_UUID)
-async def calendar_publish(name: str, time_zone: str, npub: PatronNpub = "") -> dict[str, Any]:
+async def calendar_publish(name: str, time_zone: str, site: str = "", npub: PatronNpub = "") -> dict[str, Any]:
     """Mint a calendar feed of your tasks that a phone or computer can subscribe to.
 
     Returns a token. The site you use serves the feed at an address built from
@@ -1042,9 +1050,10 @@ async def calendar_publish(name: str, time_zone: str, npub: PatronNpub = "") -> 
     Args:
         name: What the calendar is called in the calendar app, e.g. "Sam's chores".
         time_zone: Your IANA time zone, e.g. "America/New_York". It decides which day a task falls on.
+        site: Only that site's tasks and those posted with no site, as taskbooth_list_tasks. Omit for every task.
     """
     db = await store()
-    return {"ok": True, "feed": await db.publish_feed(runtime.resolve_npub(npub), name, time_zone)}
+    return {"ok": True, "feed": await db.publish_feed(runtime.resolve_npub(npub), name, time_zone, site=site)}
 
 
 @tool
@@ -1063,7 +1072,7 @@ async def calendar_fetch(token: str) -> dict[str, Any]:
     found = await db.feed_for(token)
     if found is None:
         raise ValueError("That is not a calendar feed.")
-    tasks = await db.tasks_of(found["owner"])
+    tasks = await db.tasks_of(found["owner"], site=found.get("site", ""))
     ics = feed.chores_ics(tasks, name=found["name"], zone=found["zone"], token=found["token"], at=int(time.time()))
     return {"ok": True, "ics": ics, "name": found["name"], "count": ics.count("BEGIN:VEVENT")}
 

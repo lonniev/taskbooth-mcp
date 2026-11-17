@@ -215,3 +215,39 @@ def test_a_graded_task_commits_what_it_earned_and_counts_the_award_once_paid():
     assert orgs.project_totals([graded]) == {"committed_sats": 80_000, "paid_sats": 10_000, "tasks": 1,
                                              "by_standing": {"owed": 1}}
     assert orgs.project_totals([paid])["paid_sats"] == 80_000
+
+
+# ---------------------------------------------------------------------------
+# Sites sharing the Operator
+# ---------------------------------------------------------------------------
+
+
+async def test_each_site_lists_its_own_tasks_and_every_unstamped_one(db, people):
+    me, other = people["owner"], people["painter"]
+    base = {"rubric": RUBRIC, "audience": [other], "needed_by": NOW + 9 * DAY, "at": NOW}
+    chore = await db.post(me, title="Make the bed", site="chipin", **base)
+    portrait = await db.post(me, title="Paint a portrait", site="commissionmarket", **base)
+    plain = await db.post(me, title="Posted by an agent", **base)
+
+    ids = lambda tasks: sorted(t["task_id"] for t in tasks)
+    assert ids(await db.tasks_of(me, at=NOW + 1, site="chipin")) == sorted([chore, plain])
+    assert ids(await db.tasks_of(me, at=NOW + 1, site="commissionmarket")) == sorted([portrait, plain])
+    assert ids(await db.tasks_of(me, at=NOW + 1)) == sorted([chore, portrait, plain])
+    with pytest.raises(ValueError, match="site"):
+        await db.post(me, title="Bad", site="Chip In!", **base)
+
+
+async def test_a_recurring_task_keeps_its_site(db, people):
+    me = people["owner"]
+    first = await db.post(me, title="Feed the cat", rubric=RUBRIC, audience=[me], needed_by=NOW + DAY,
+                          every_days=7, site="chipin", at=NOW)
+    later = await db.tasks_of(me, at=NOW + 2 * DAY, site="chipin")
+    assert first in [t["task_id"] for t in later] and len(later) == 2
+    assert all(t["site"] == "chipin" for t in later)
+    assert await db.tasks_of(me, at=NOW + 2 * DAY, site="commissionmarket") == []
+
+
+async def test_a_calendar_feed_keeps_to_its_site(db, people):
+    me = people["owner"]
+    made = await db.publish_feed(me, "Chores", "America/Chicago", at=NOW, site="chipin")
+    assert (await db.feed_for(made["token"], at=NOW))["site"] == "chipin"

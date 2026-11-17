@@ -115,6 +115,23 @@ def _whole(value: Any, what: str, *, least: int = 0, most: int = 2**53) -> int:
     return value
 
 
+def checked_site(value: Any) -> str:
+    """The site a task was posted from, e.g. "chipin": a short lowercase name, or "" for none.
+
+    Several sites share this Operator. Each stamps the tasks it posts and lists
+    its own; a task with no stamp is listed on every site.
+    """
+    site = _text(value, "site", 32)
+    if site and not (site[0].isalpha() and all(c.isascii() and (c.islower() or c.isdigit() or c == "-") for c in site)):
+        raise ValueError("A site is a short lowercase name such as chipin.")
+    return site
+
+
+def _on_site(task: dict[str, Any], site: str) -> bool:
+    """Whether a site lists this task: its own, and every task no site stamped."""
+    return not site or task.get("site", "") in ("", site)
+
+
 def checked_rubric(rubric: Any) -> dict[str, Any]:
     """A rubric as it is stored: its grades, what each earns, and the appeal rule."""
     if not isinstance(rubric, dict) or not isinstance(rubric.get("grades"), list):
@@ -487,7 +504,7 @@ class TaskStore:
             task = await self._load(task_id) or task
         return self._view(task, roles, at)
 
-    async def tasks_of(self, npub: str, at: int | None = None) -> list[dict[str, Any]]:
+    async def tasks_of(self, npub: str, at: int | None = None, site: str = "") -> list[dict[str, Any]]:
         """Every task ``npub`` posted, performs, grades, or may claim, and every task filed in their
         Organizations; soonest needed first.
 
@@ -519,7 +536,8 @@ class TaskStore:
                 await self._recur(task, npub, at)
         orgs_in = await self.orgs_in(npub)
         seen = [(t, self._roles(t, npub, orgs_in)) for t in tasks]
-        return [self._view(t, roles, at) for t, roles in seen if self._may_see(t, roles)]
+        site = checked_site(site)
+        return [self._view(t, roles, at) for t, roles in seen if self._may_see(t, roles) and _on_site(t, site)]
 
     async def events(self, npub: str, task_id: str) -> list[dict[str, Any]]:
         """The task's history, oldest first, for anyone with a part in it beyond the audience."""
@@ -556,6 +574,7 @@ class TaskStore:
         org_id: str = "",
         project_id: str = "",
         purchaser_signature: str = "",
+        site: str = "",
         late: dict[str, Any] | None = None,
         deposit_pct: int = 0,
         cover: dict[str, Any] | None = None,
@@ -571,6 +590,7 @@ class TaskStore:
             tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late,
             deposit_pct=deposit_pct, cover=cover, milestones=milestones, at=at,
         )
+        data["site"] = checked_site(site)
         org_id, project_id = await self._filing(purchaser, org_id, project_id)
         task_id = new_id()
         await self._insert(
@@ -986,6 +1006,7 @@ class TaskStore:
                               for m in task.get("milestones") or []]
         data["earliest_start"] = task["earliest_start"] + shift if task["earliest_start"] else 0
         data["signatures"] = {"purchaser": task["signatures"]["purchaser"], "performer": ""}
+        data["site"] = task.get("site", "")
         await self._insert(
             task_id=new_id(), purchaser=task["purchaser"], needed_by=due, series_id=task["series_id"],
             occurrence=task["occurrence"] + 1, org_id=task["org_id"], project_id=task["project_id"],
@@ -1388,7 +1409,8 @@ class TaskStore:
 
     # -- calendar feeds ------------------------------------------------------
 
-    async def publish_feed(self, owner: str, name: str, zone: str, at: int | None = None) -> dict[str, Any]:
+    async def publish_feed(self, owner: str, name: str, zone: str, at: int | None = None,
+                           site: str = "") -> dict[str, Any]:
         """Mint a calendar feed for ``owner``. The token is returned once here and kept sealed.
 
         Raises:
@@ -1397,6 +1419,7 @@ class TaskStore:
         owner = checked_npub(owner, "owner")
         name = _text(name, "calendar name", 80, required=True)
         zone = feed.checked_zone(zone)
+        site = checked_site(site)
         if len(await self.feeds_of(owner)) >= feed.MAX_FEEDS:
             raise ValueError(f"You keep {feed.MAX_FEEDS} calendar feeds already; revoke one first.")
         token = feed.new_token()
@@ -1404,9 +1427,10 @@ class TaskStore:
         await self._neon._execute(
             f"INSERT INTO {self._t('taskbooth_feeds')} (token_key, owner_npub, created_at, fetches, last_fetch, data_enc) "
             "VALUES ($1, $2, $3, 0, NULL, $4)",
-            [feed.token_key(token), owner, at, self._seal({"token": token, "name": name, "zone": zone})],
+            [feed.token_key(token), owner, at, self._seal({"token": token, "name": name, "zone": zone, "site": site})],
         )
-        return {"token": token, "name": name, "zone": zone, "created_at": at, "fetches": 0, "last_fetch": None}
+        return {"token": token, "name": name, "zone": zone, "site": site, "created_at": at, "fetches": 0,
+                "last_fetch": None}
 
     async def feeds_of(self, owner: str) -> list[dict[str, Any]]:
         rows = await self._rows(
