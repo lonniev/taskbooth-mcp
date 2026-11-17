@@ -1,1 +1,0 @@
-- `service_status` reports the released version again; it had stayed at 0.1.0 after the 0.2.0 release.
