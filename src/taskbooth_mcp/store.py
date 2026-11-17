@@ -30,7 +30,7 @@ import secrets
 import time
 from typing import Any
 
-from taskbooth_mcp import feed, terms
+from taskbooth_mcp import feed, orgs, terms
 from taskbooth_mcp.agreement import offer_hash, offer_statement
 from taskbooth_mcp.lifecycle import (
     EXPIRED,
@@ -113,6 +113,23 @@ def _whole(value: Any, what: str, *, least: int = 0, most: int = 2**53) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not least <= value <= most:
         raise ValueError(f"The {what} must be a whole number from {least} to {most}.")
     return value
+
+
+def checked_site(value: Any) -> str:
+    """The site a task was posted from, e.g. "chipin": a short lowercase name, or "" for none.
+
+    Several sites share this Operator. Each stamps the tasks it posts and lists
+    its own; a task with no stamp is listed on every site.
+    """
+    site = _text(value, "site", 32)
+    if site and not (site[0].isalpha() and all(c.isascii() and (c.islower() or c.isdigit() or c == "-") for c in site)):
+        raise ValueError("A site is a short lowercase name such as chipin.")
+    return site
+
+
+def _on_site(task: dict[str, Any], site: str) -> bool:
+    """Whether a site lists this task: its own, and every task no site stamped."""
+    return not site or task.get("site", "") in ("", site)
 
 
 def checked_rubric(rubric: Any) -> dict[str, Any]:
@@ -319,6 +336,18 @@ class TaskStore:
              "token_key TEXT PRIMARY KEY, owner_npub TEXT NOT NULL, created_at BIGINT NOT NULL, "
              "fetches INTEGER NOT NULL, last_fetch BIGINT, data_enc TEXT NOT NULL)"),
             f"CREATE INDEX IF NOT EXISTS idx_taskbooth_feeds_owner ON {self._t('taskbooth_feeds')}(owner_npub)",
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_tasks_org ON {self._t('taskbooth_tasks')}(org_id)",
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_tasks_project ON {self._t('taskbooth_tasks')}(project_id)",
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_orgs')} ("
+             "org_id TEXT PRIMARY KEY, owner_npub TEXT NOT NULL, created_at BIGINT NOT NULL, data_enc TEXT NOT NULL)"),
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_orgs_owner ON {self._t('taskbooth_orgs')}(owner_npub)",
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_org_members')} ("
+             "org_id TEXT NOT NULL, npub TEXT NOT NULL, data_enc TEXT NOT NULL, PRIMARY KEY (org_id, npub))"),
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_org_members_npub ON {self._t('taskbooth_org_members')}(npub)",
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_projects')} ("
+             "project_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, created_at BIGINT NOT NULL, "
+             "archived INTEGER NOT NULL, data_enc TEXT NOT NULL)"),
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_projects_org ON {self._t('taskbooth_projects')}(org_id)",
         ):
             await self._neon._execute(sql, [])
 
@@ -351,9 +380,15 @@ class TaskStore:
         return self._task(rows[0]) if rows else None
 
     @staticmethod
-    def _roles(task: dict[str, Any], npub: str) -> frozenset[Role]:
-        """Every role this npub holds on this task. One npub may hold several."""
+    def _roles(task: dict[str, Any], npub: str, orgs_in: frozenset[str] = frozenset()) -> frozenset[Role]:
+        """Every role this npub holds on this task. One npub may hold several.
+
+        ``orgs_in`` are the Organizations ``npub`` owns or belongs to: a task filed
+        under one of them is theirs to see, as a member.
+        """
         roles: set[Role] = set()
+        if task.get("org_id") and task["org_id"] in orgs_in:
+            roles.add(Role.MEMBER)
         if npub == task["purchaser"]:
             roles.add(Role.PURCHASER)
         if npub == task["performer"]:
@@ -456,7 +491,7 @@ class TaskStore:
         """The task as ``npub`` may see it, or :class:`NotYours`."""
         at = int(time.time()) if at is None else at
         task = await self._load(task_id)
-        roles = self._roles(task, npub) if task else frozenset()
+        roles = self._roles(task, npub, await self.orgs_in(npub)) if task else frozenset()
         if task is None or not self._may_see(task, roles):
             raise NotYours(f"No task {task_id!r} is yours to see.")
         if self._wants_miss(task, at):
@@ -469,8 +504,9 @@ class TaskStore:
             task = await self._load(task_id) or task
         return self._view(task, roles, at)
 
-    async def tasks_of(self, npub: str, at: int | None = None) -> list[dict[str, Any]]:
-        """Every task ``npub`` posted, performs, grades, or may claim; soonest needed first.
+    async def tasks_of(self, npub: str, at: int | None = None, site: str = "") -> list[dict[str, Any]]:
+        """Every task ``npub`` posted, performs, grades, or may claim, and every task filed in their
+        Organizations; soonest needed first.
 
         A recurring task found expired is given its next occurrence here, by
         this read, since nothing runs in the background to do it.
@@ -481,6 +517,8 @@ class TaskStore:
                 f"SELECT {_TASK_COLUMNS} FROM {self._t('taskbooth_tasks')} WHERE purchaser_npub = $1 "
                 f"OR performer_npub = $1 OR task_id IN "
                 f"(SELECT task_id FROM {self._t('taskbooth_people')} WHERE npub = $1) "
+                f"OR org_id IN (SELECT org_id FROM {self._t('taskbooth_orgs')} WHERE owner_npub = $1) "
+                f"OR org_id IN (SELECT org_id FROM {self._t('taskbooth_org_members')} WHERE npub = $1) "
                 "ORDER BY needed_by, task_id",
                 [npub],
             )
@@ -496,13 +534,15 @@ class TaskStore:
                 await self._miss(task, at)
             for task in stale:
                 await self._recur(task, npub, at)
-        seen = [(t, self._roles(t, npub)) for t in tasks]
-        return [self._view(t, roles, at) for t, roles in seen if self._may_see(t, roles)]
+        orgs_in = await self.orgs_in(npub)
+        seen = [(t, self._roles(t, npub, orgs_in)) for t in tasks]
+        site = checked_site(site)
+        return [self._view(t, roles, at) for t, roles in seen if self._may_see(t, roles) and _on_site(t, site)]
 
     async def events(self, npub: str, task_id: str) -> list[dict[str, Any]]:
         """The task's history, oldest first, for anyone with a part in it beyond the audience."""
         task = await self._load(task_id)
-        roles = self._roles(task, npub) if task else frozenset()
+        roles = self._roles(task, npub, await self.orgs_in(npub)) if task else frozenset()
         if task is None or not roles - {Role.AUDIENCE}:
             raise NotYours(f"No task {task_id!r} is yours to see.")
         rows = await self._rows(
@@ -534,6 +574,7 @@ class TaskStore:
         org_id: str = "",
         project_id: str = "",
         purchaser_signature: str = "",
+        site: str = "",
         late: dict[str, Any] | None = None,
         deposit_pct: int = 0,
         cover: dict[str, Any] | None = None,
@@ -549,10 +590,12 @@ class TaskStore:
             tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late,
             deposit_pct=deposit_pct, cover=cover, milestones=milestones, at=at,
         )
+        data["site"] = checked_site(site)
+        org_id, project_id = await self._filing(purchaser, org_id, project_id)
         task_id = new_id()
         await self._insert(
             task_id=task_id, purchaser=purchaser, needed_by=needed_by, series_id=task_id, occurrence=0,
-            org_id=_text(org_id, "Organization id", 64), project_id=_text(project_id, "Project id", 64),
+            org_id=org_id, project_id=project_id,
             data=data, actor=purchaser, action="post", at=at,
         )
         return task_id
@@ -963,6 +1006,7 @@ class TaskStore:
                               for m in task.get("milestones") or []]
         data["earliest_start"] = task["earliest_start"] + shift if task["earliest_start"] else 0
         data["signatures"] = {"purchaser": task["signatures"]["purchaser"], "performer": ""}
+        data["site"] = task.get("site", "")
         await self._insert(
             task_id=new_id(), purchaser=task["purchaser"], needed_by=due, series_id=task["series_id"],
             occurrence=task["occurrence"] + 1, org_id=task["org_id"], project_id=task["project_id"],
@@ -977,7 +1021,7 @@ class TaskStore:
     async def offer(self, npub: str, task_id: str, at: int | None = None) -> dict[str, Any]:
         """The statement both parties sign, its hash, and who has signed it."""
         task = await self._load(task_id)
-        roles = self._roles(task, npub) if task else frozenset()
+        roles = self._roles(task, npub, await self.orgs_in(npub)) if task else frozenset()
         if task is None or not self._may_see(task, roles):
             raise NotYours(f"No task {task_id!r} is yours to see.")
         signed = task.get("agreement") or {}
@@ -1140,9 +1184,233 @@ class TaskStore:
         return [{"template_id": r["template_id"], "created_at": int(r["created_at"]), **self._open(r["data_enc"])}
                 for r in rows]
 
+    # -- organizations and projects -----------------------------------------
+
+    async def orgs_in(self, npub: str) -> frozenset[str]:
+        """The Organizations ``npub`` owns or belongs to."""
+        rows = await self._rows(
+            f"SELECT org_id FROM {self._t('taskbooth_orgs')} WHERE owner_npub = $1 "
+            f"UNION SELECT org_id FROM {self._t('taskbooth_org_members')} WHERE npub = $1",
+            [npub],
+        )
+        return frozenset(r["org_id"] for r in rows)
+
+    async def _org_row(self, org_id: str) -> dict[str, Any] | None:
+        rows = await self._rows(
+            f"SELECT org_id, owner_npub, created_at, data_enc FROM {self._t('taskbooth_orgs')} WHERE org_id = $1",
+            [str(org_id)],
+        )
+        return rows[0] if rows else None
+
+    async def _members(self, org_id: str) -> list[dict[str, Any]]:
+        rows = await self._rows(
+            f"SELECT npub, data_enc FROM {self._t('taskbooth_org_members')} WHERE org_id = $1 ORDER BY npub",
+            [org_id],
+        )
+        return [{"npub": r["npub"], **self._open(r["data_enc"])} for r in rows]
+
+    async def _place(self, npub: str, org_id: str) -> tuple[dict[str, Any], str]:
+        """The Organization's row and ``npub``'s place in it, or :class:`NotYours` for someone with none."""
+        row = await self._org_row(org_id)
+        if row is None:
+            raise NotYours(f"No Organization {org_id!r} is yours to see.")
+        members = {m["npub"] for m in await self._members(row["org_id"])}
+        place = orgs.standing_in(row["owner_npub"], members, npub)
+        if not orgs.may_see(place):
+            raise NotYours(f"No Organization {org_id!r} is yours to see.")
+        return row, place
+
+    async def _managed(self, npub: str, org_id: str) -> dict[str, Any]:
+        row, place = await self._place(npub, org_id)
+        if not orgs.may_manage(place):
+            raise ValueError("Only the Organization's owner may change it, its members or its Projects.")
+        return row
+
+    async def save_org(self, owner: str, name: str, about: str = "", org_id: str = "",
+                       at: int | None = None) -> str:
+        """Make an Organization, or change one ``owner`` owns."""
+        at = int(time.time()) if at is None else at
+        sealed = self._seal({"name": _text(name, "Organization's name", 80, required=True),
+                             "about": _text(about, "Organization's description", 1000)})
+        if org_id:
+            await self._managed(owner, org_id)
+            await self._neon._execute(
+                f"UPDATE {self._t('taskbooth_orgs')} SET data_enc = $1 WHERE org_id = $2", [sealed, org_id])
+            return org_id
+        owner = checked_npub(owner, "owner")
+        owned = await self._rows(
+            f"SELECT COUNT(*) AS n FROM {self._t('taskbooth_orgs')} WHERE owner_npub = $1", [owner])
+        if int(owned[0]["n"]) >= orgs.MAX_ORGS_PER_OWNER:
+            raise ValueError(f"One npub may own at most {orgs.MAX_ORGS_PER_OWNER} Organizations.")
+        org_id = new_id()
+        await self._neon._execute(
+            f"INSERT INTO {self._t('taskbooth_orgs')} (org_id, owner_npub, created_at, data_enc) "
+            "VALUES ($1, $2, $3, $4)",
+            [org_id, owner, at, sealed],
+        )
+        return org_id
+
+    async def orgs_of(self, npub: str) -> list[dict[str, Any]]:
+        """Every Organization ``npub`` owns or belongs to, with their place in each, oldest first."""
+        ids = await self.orgs_in(npub)
+        out = []
+        for org_id in ids:
+            row = await self._org_row(org_id)
+            if row is not None:
+                out.append({"org_id": org_id, "owner": row["owner_npub"], "created_at": int(row["created_at"]),
+                            "your_place": orgs.OWNER if row["owner_npub"] == npub else orgs.MEMBER,
+                            **self._open(row["data_enc"])})
+        return sorted(out, key=lambda o: (o["created_at"], o["org_id"]))
+
+    async def org(self, npub: str, org_id: str) -> dict[str, Any]:
+        """An Organization whole: its members and its Projects, for its owner and members."""
+        row, place = await self._place(npub, org_id)
+        return {
+            "org_id": row["org_id"], "owner": row["owner_npub"], "created_at": int(row["created_at"]),
+            "your_place": place, **self._open(row["data_enc"]),
+            "members": await self._members(row["org_id"]),
+            "projects": [self._project_summary(p) for p in await self._projects_of(row["org_id"])],
+        }
+
+    async def save_member(self, owner: str, org_id: str, npub: str, label: str = "") -> None:
+        """Add a member, or change their label. The owner is never a member of their own Organization."""
+        row = await self._managed(owner, org_id)
+        npub = checked_npub(npub, "member")
+        if npub == row["owner_npub"]:
+            raise ValueError("The owner already sees everything in the Organization.")
+        members = await self._members(org_id)
+        if npub not in {m["npub"] for m in members} and len(members) >= orgs.MAX_MEMBERS:
+            raise ValueError(f"An Organization has at most {orgs.MAX_MEMBERS} members.")
+        sealed = self._seal({"label": _text(label, "member's label", 80)})
+        await self._neon._execute(
+            f"INSERT INTO {self._t('taskbooth_org_members')} (org_id, npub, data_enc) VALUES ($1, $2, $3) "
+            "ON CONFLICT (org_id, npub) DO UPDATE SET data_enc = excluded.data_enc",
+            [org_id, npub, sealed],
+        )
+
+    async def remove_member(self, owner: str, org_id: str, npub: str) -> bool:
+        """Take a member out. They stop seeing the Organization and its tasks at once."""
+        await self._managed(owner, org_id)
+        gone = await self._rows(
+            f"DELETE FROM {self._t('taskbooth_org_members')} WHERE org_id = $1 AND npub = $2 RETURNING npub",
+            [org_id, str(npub)],
+        )
+        return bool(gone)
+
+    async def _projects_of(self, org_id: str) -> list[dict[str, Any]]:
+        rows = await self._rows(
+            f"SELECT project_id, org_id, created_at, archived, data_enc FROM {self._t('taskbooth_projects')} "
+            "WHERE org_id = $1 ORDER BY created_at, project_id",
+            [org_id],
+        )
+        return [self._project(r) for r in rows]
+
+    def _project(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {"project_id": row["project_id"], "org_id": row["org_id"], "created_at": int(row["created_at"]),
+                "archived": bool(row["archived"]), **self._open(row["data_enc"])}
+
+    @staticmethod
+    def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
+        keep = ("project_id", "name", "archived", "budget_sats", "created_at")
+        return {k: project[k] for k in keep if k in project}
+
+    async def _project_row(self, project_id: str) -> dict[str, Any] | None:
+        rows = await self._rows(
+            f"SELECT project_id, org_id, created_at, archived, data_enc FROM {self._t('taskbooth_projects')} "
+            "WHERE project_id = $1",
+            [str(project_id)],
+        )
+        return self._project(rows[0]) if rows else None
+
+    async def save_project(self, owner: str, org_id: str, name: str, brief: str = "", budget_sats: int = 0,
+                           circle: list[str] | None = None, defaults: dict[str, Any] | None = None,
+                           project_id: str = "", at: int | None = None) -> str:
+        """Make a Project in an Organization, or change one. Only the owner may."""
+        at = int(time.time()) if at is None else at
+        await self._managed(owner, org_id)
+        people = circle or []
+        if not isinstance(people, list) or len(people) > orgs.MAX_CIRCLE:
+            raise ValueError(f"A Project's circle names at most {orgs.MAX_CIRCLE} npubs.")
+        sealed = self._seal({
+            "name": _text(name, "Project's name", 120, required=True),
+            "brief": _text(brief, "Project's brief", MAX_TEXT),
+            "budget_sats": _whole(budget_sats, "Project's budget in sats", most=orgs.MAX_BUDGET_SATS),
+            "circle": sorted({checked_npub(n, "circle member") for n in people}),
+            "defaults": orgs.checked_defaults(defaults, text=_text, whole=_whole, flag=_flag, ip_options=IP_OPTIONS,
+                                              max_days=MAX_DEEMED_DAYS, max_text=MAX_TEXT),
+        })
+        if project_id:
+            changed = await self._rows(
+                f"UPDATE {self._t('taskbooth_projects')} SET data_enc = $1 WHERE project_id = $2 AND org_id = $3 "
+                "RETURNING project_id",
+                [sealed, project_id, org_id],
+            )
+            if not changed:
+                raise NotYours(f"No Project {project_id!r} is in that Organization.")
+            return project_id
+        if len(await self._projects_of(org_id)) >= orgs.MAX_PROJECTS:
+            raise ValueError(f"An Organization has at most {orgs.MAX_PROJECTS} Projects.")
+        project_id = new_id()
+        await self._neon._execute(
+            f"INSERT INTO {self._t('taskbooth_projects')} (project_id, org_id, created_at, archived, data_enc) "
+            "VALUES ($1, $2, $3, 0, $4)",
+            [project_id, org_id, at, sealed],
+        )
+        return project_id
+
+    async def archive_project(self, owner: str, org_id: str, project_id: str, archived: bool = True) -> None:
+        """Close a Project to new tasks, or open it again. Its tasks stay as they are."""
+        await self._managed(owner, org_id)
+        changed = await self._rows(
+            f"UPDATE {self._t('taskbooth_projects')} SET archived = $1 WHERE project_id = $2 AND org_id = $3 "
+            "RETURNING project_id",
+            [1 if _flag(archived, "archived flag") else 0, project_id, org_id],
+        )
+        if not changed:
+            raise NotYours(f"No Project {project_id!r} is in that Organization.")
+
+    async def project(self, npub: str, project_id: str, at: int | None = None) -> dict[str, Any]:
+        """A Project whole, with what its tasks have committed and paid, for the Organization's people."""
+        at = int(time.time()) if at is None else at
+        project = await self._project_row(project_id)
+        if project is None:
+            raise NotYours(f"No Project {project_id!r} is yours to see.")
+        try:
+            _, place = await self._place(npub, project["org_id"])
+        except NotYours:
+            raise NotYours(f"No Project {project_id!r} is yours to see.") from None
+        rows = await self._rows(
+            f"SELECT {_TASK_COLUMNS} FROM {self._t('taskbooth_tasks')} WHERE project_id = $1 AND org_id = $2",
+            [project["project_id"], project["org_id"]],
+        )
+        viewed = [self._view(self._task(r), frozenset({Role.MEMBER}), at) for r in rows]
+        return {**project, "your_place": place, "totals": orgs.project_totals(viewed)}
+
+    async def _filing(self, npub: str, org_id: Any, project_id: Any) -> tuple[str, str]:
+        """Where a new task is filed: no Organization, or a Project the poster may post in."""
+        org_id = _text(org_id, "Organization id", 64)
+        project_id = _text(project_id, "Project id", 64)
+        if not org_id and not project_id:
+            return "", ""
+        if not org_id or not project_id:
+            raise ValueError("A task is filed under both an Organization and one of its Projects, or neither.")
+        try:
+            _, place = await self._place(npub, org_id)
+        except NotYours:
+            raise ValueError("You may post only into the Projects of an Organization you are in.") from None
+        if not orgs.may_post(place):
+            raise ValueError("You may post only into the Projects of an Organization you are in.")
+        project = await self._project_row(project_id)
+        if project is None or project["org_id"] != org_id:
+            raise ValueError("That Project is not in that Organization.")
+        if project["archived"]:
+            raise ValueError("That Project is archived and takes no new tasks.")
+        return org_id, project_id
+
     # -- calendar feeds ------------------------------------------------------
 
-    async def publish_feed(self, owner: str, name: str, zone: str, at: int | None = None) -> dict[str, Any]:
+    async def publish_feed(self, owner: str, name: str, zone: str, at: int | None = None,
+                           site: str = "") -> dict[str, Any]:
         """Mint a calendar feed for ``owner``. The token is returned once here and kept sealed.
 
         Raises:
@@ -1151,6 +1419,7 @@ class TaskStore:
         owner = checked_npub(owner, "owner")
         name = _text(name, "calendar name", 80, required=True)
         zone = feed.checked_zone(zone)
+        site = checked_site(site)
         if len(await self.feeds_of(owner)) >= feed.MAX_FEEDS:
             raise ValueError(f"You keep {feed.MAX_FEEDS} calendar feeds already; revoke one first.")
         token = feed.new_token()
@@ -1158,9 +1427,10 @@ class TaskStore:
         await self._neon._execute(
             f"INSERT INTO {self._t('taskbooth_feeds')} (token_key, owner_npub, created_at, fetches, last_fetch, data_enc) "
             "VALUES ($1, $2, $3, 0, NULL, $4)",
-            [feed.token_key(token), owner, at, self._seal({"token": token, "name": name, "zone": zone})],
+            [feed.token_key(token), owner, at, self._seal({"token": token, "name": name, "zone": zone, "site": site})],
         )
-        return {"token": token, "name": name, "zone": zone, "created_at": at, "fetches": 0, "last_fetch": None}
+        return {"token": token, "name": name, "zone": zone, "site": site, "created_at": at, "fetches": 0,
+                "last_fetch": None}
 
     async def feeds_of(self, owner: str) -> list[dict[str, Any]]:
         rows = await self._rows(

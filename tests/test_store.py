@@ -82,7 +82,9 @@ async def test_words_and_amounts_are_never_stored_in_the_clear(queue, family):
 
 async def test_every_field_of_the_record_comes_back(queue, family):
     _, db = queue
-    task = await _post(db, family, earliest_start=NOW + 100, org_id="org1", project_id="proj1",
+    org = await db.save_org(family["parent"], "Household", at=NOW)
+    project = await db.save_project(family["parent"], org, "Bedrooms", at=NOW)
+    task = await _post(db, family, earliest_start=NOW + 100, org_id=org, project_id=project,
                        purchaser_signature="sig-p")
     await db.act(family["child"], task, Action.CLAIM, performer_signature="sig-c", at=NOW + 200)
     await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 300)
@@ -100,7 +102,7 @@ async def test_every_field_of_the_record_comes_back(queue, family):
     assert seen["assessment"] == {"grade": "Spotless", "sats": 2000, "assessor": family["parent"],
                                   "reasons": "Lovely", "at": NOW + 400}
     assert seen["paid_at"] == NOW + 500
-    assert (seen["org_id"], seen["project_id"]) == ("org1", "proj1")
+    assert (seen["org_id"], seen["project_id"]) == (org, project)
     assert seen["state"] == "paid" and seen["standing"] == "paid" and seen["final"] is True
     assert await db.payout(task) == {"paid_at": NOW + 500, "payment_hash": "cd" * 32, "sats": 2000,
                                      "method": "invoice"}
