@@ -1,6 +1,0 @@
-- A task with a cover page is a contract once both parties sign one offer (terms 2.3). `taskbooth_offer_terms` shows the offer as one statement, with its sha256, that names every term and nothing about who claims it.
-- The purchaser signs before anyone may claim, and the performer signs before marking the work done. An edit clears the purchaser's signature, and a released performer's signature goes with them.
-- Two ways to sign, with no new Nostr event kind:
-  - `taskbooth_sign_offer`, called as a NIP-98 signed request, keeps that request as the signature. This is for agents with their own key.
-  - `taskbooth_request_offer_signature` and `taskbooth_receive_offer_signature` sign by replying to a DM, kept with this Operator's witness.
-  - Every signature is checked before it is kept.

@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.2.0] — 2026-11-17
+
+### Added
+
+- The MakerMarket Standard Terms, version v0, are published in the Operator, and each version is fixed by the sha256 of its text. `taskbooth_standard_terms` returns the text and hash, and is free. Escrow is not offered under v0, so every job is paid over Lightning.
+- A task may carry a cover page (`cover` on `post_task` and `edit_task`) with a spec link and hash, deliverables, a deemed grade and its period, an IP option, and confidentiality. The Operator stamps the terms version and hash on it, and refuses escrow fields for now.
+- Finished work left ungraded past the cover page's deemed-acceptance period is graded at the deemed grade on the next read, marked `deemed`. The performer may still appeal it.
+- Milestones: dated part-payments of the top grade (`milestones` on `post_task` and `edit_task`). `taskbooth_request_milestone` and `taskbooth_confirm_milestone` work like the deposit's tools, from each milestone's date. With the deposit they ask for at most 90%.
+- An assessment now reports `paid_ahead_sats` (the deposit plus confirmed milestones) in place of `deposit_sats`, and the award pays only what the grade earns beyond it.
+- A performer who gives a job back records `deposit_owed_back`; one released by the purchaser keeps the deposit, and either way keeps paid milestones.
+
+- A task with a cover page is a contract once both parties sign one offer (terms 2.3). `taskbooth_offer_terms` shows the offer as one statement, with its sha256, that names every term and nothing about who claims it.
+- The purchaser signs before anyone may claim, and the performer signs before marking the work done. An edit clears the purchaser's signature, and a released performer's signature goes with them.
+- Two ways to sign, with no new Nostr event kind:
+  - `taskbooth_sign_offer`, called as a NIP-98 signed request, keeps that request as the signature. This is for agents with their own key.
+  - `taskbooth_request_offer_signature` and `taskbooth_receive_offer_signature` sign by replying to a DM, kept with this Operator's witness.
+  - Every signature is checked before it is kept.
+
 ## [0.1.0] — 2026-11-17
 
 ### Added
