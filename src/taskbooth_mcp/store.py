@@ -31,6 +31,7 @@ import time
 from typing import Any
 
 from taskbooth_mcp import feed, terms
+from taskbooth_mcp.agreement import offer_hash, offer_statement
 from taskbooth_mcp.lifecycle import (
     EXPIRED,
     LATE_KINDS,
@@ -383,6 +384,9 @@ class TaskStore:
         view.setdefault("deposit_pct", 0)
         view.setdefault("cover", None)
         view.setdefault("milestones", [])
+        signed = task.get("agreement") or {}
+        view["agreement"] = {"purchaser_signed": bool(signed.get("purchaser")),
+                             "performer_signed": bool(signed.get("performer"))}
         return view
 
     @staticmethod
@@ -701,6 +705,13 @@ class TaskStore:
             facts = Facts(sats=int((task.get("assessment") or {}).get("sats", 0)))
 
         now = step(was, action, roles, facts)  # raises ValueError on an illegal move
+        if task.get("cover"):
+            # A job under the Standard Terms is a contract only once both parties signed one offer (terms 2.3).
+            signed = task.get("agreement") or {}
+            if action is Action.CLAIM and not signed.get("purchaser"):
+                raise ValueError("The purchaser has not signed this offer yet, so it cannot be claimed.")
+            if action is Action.MARK_DONE and not signed.get("performer"):
+                raise ValueError("Sign the offer first (taskbooth_sign_offer or taskbooth_request_offer_signature).")
 
         data = {k: task[k] for k in self._sealed_keys(task)}
         data.pop("nudges", None)  # a reminder is about the task as it stood; it moved on
@@ -721,6 +732,8 @@ class TaskStore:
                 data["milestones"] = [{**m, "sats": top_sats * m["pct"] // 100} for m in data.get("milestones") or []]
             case Action.RELEASE:
                 performer = None
+                if data.get("agreement"):
+                    data["agreement"] = {k: v for k, v in data["agreement"].items() if k != "performer"}
                 data["signatures"] = {**data["signatures"], "performer": ""}
                 data.pop("claimed_at", None)
                 gone = data.pop("deposit", None) or {}
@@ -886,6 +899,7 @@ class TaskStore:
         )
         data = {k: task[k] for k in self._sealed_keys(task)} | terms
         data.pop("nudges", None)
+        data.pop("agreement", None)  # the offer changed, so the signature on the old one no longer holds
         await self._bump(task, data, at, purchaser, Action.EDIT, {"changed": sorted(changes)}, needed_by=needed_by)
         if "audience" in changes:
             await self._neon._execute(
@@ -957,6 +971,43 @@ class TaskStore:
         await self._neon._execute(
             f"UPDATE {self._t('taskbooth_tasks')} SET rolled = 1 WHERE task_id = $1", [task["task_id"]]
         )
+
+    # -- the signed offer ---------------------------------------------------
+
+    async def offer(self, npub: str, task_id: str, at: int | None = None) -> dict[str, Any]:
+        """The statement both parties sign, its hash, and who has signed it."""
+        task = await self._load(task_id)
+        roles = self._roles(task, npub) if task else frozenset()
+        if task is None or not self._may_see(task, roles):
+            raise NotYours(f"No task {task_id!r} is yours to see.")
+        signed = task.get("agreement") or {}
+        return {"statement": offer_statement(task), "statement_hash": offer_hash(task),
+                "signatures": {role: signed[role] for role in ("purchaser", "performer") if signed.get(role)}}
+
+    async def sign(self, npub: str, task_id: str, record: dict[str, Any], *, operator_npub: str,
+                   at: int | None = None) -> dict[str, Any]:
+        """Keep ``npub``'s signature on the offer: the purchaser while it is open, the performer once claimed.
+
+        The record must verify, be ``npub``'s, and be over this offer as it stands now.
+        """
+        from tollbooth.tools.signature import verify_signature_record
+
+        at = int(time.time()) if at is None else at
+        task = await self._load(task_id)
+        roles = self._roles(task, npub) if task else frozenset()
+        if task is None or not self._may_see(task, roles):
+            raise NotYours(f"No task {task_id!r} is yours to see.")
+        step(Standing(State(task["state"]), task["final"]), Action.SIGN, roles)
+        role = "purchaser" if task["state"] == State.POSTED else "performer"
+        digest = offer_hash(task)
+        why = verify_signature_record(record, statement_hash=digest, signer_npub=npub, operator_npub=operator_npub)
+        if why is not None:
+            raise ValueError(f"That signature does not stand: {why}. Read the offer again with taskbooth_offer_terms.")
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        data["agreement"] = {**(task.get("agreement") or {}), "statement_hash": digest, role: record}
+        await self._bump(task, data, at, npub, Action.SIGN,
+                         {"role": role, "statement_hash": digest, "method": record.get("method", "")})
+        return await self.get(npub, task_id, at)
 
     # -- paid ahead: the deposit and milestones ------------------------------
 

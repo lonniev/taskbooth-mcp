@@ -4,14 +4,26 @@
 import hashlib
 
 import pytest
+from pynostr.key import PrivateKey
 
 from taskbooth_mcp import terms
 from taskbooth_mcp.lifecycle import Action
 from taskbooth_mcp.store import checked_cover
-from tests.test_store import DAY, NOW, RUBRIC, _post, family, queue  # noqa: F401 — fixtures
+from tests.signing import agree
+from tests.test_store import DAY, NOW, RUBRIC, _post, queue  # noqa: F401 — fixtures
 from tests.test_tools import billing, call  # noqa: F401 — fixtures
 
 DUE = NOW + 2 * DAY
+
+
+@pytest.fixture
+def keys():
+    return {role: PrivateKey() for role in ("parent", "child", "sibling", "other_parent")}
+
+
+@pytest.fixture
+def family(keys):
+    return {role: key.public_key.bech32() for role, key in keys.items()}
 SPEC_HASH = hashlib.sha256(b"Translate the Welcome page into French, tu throughout.").hexdigest()
 COVER = {"spec_url": "https://example.org/spec.md", "spec_hash": SPEC_HASH, "deliverables": ["fr.ts"],
          "deemed_grade": "Tidy", "deemed_acceptance_days": 3, "ip_option": "assign"}
@@ -103,10 +115,12 @@ async def test_a_task_without_a_cover_page_reads_as_before(queue, family):
     assert seen["cover"] is None and seen["milestones"] == []
 
 
-async def test_a_repeating_task_carries_its_cover_page_forward(queue, family):
+async def test_a_repeating_task_carries_its_cover_page_forward(queue, family, keys):
     _, db = queue
     task = await _post(db, family, cover=COVER, every_days=7)
+    await agree(db, keys["parent"], task)
     await db.act(family["child"], task, Action.CLAIM, at=NOW + 10)
+    await agree(db, keys["child"], task)
     await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 20)
     tasks = await db.tasks_of(family["parent"], at=NOW + 30)
     nxt = next(t for t in tasks if t["task_id"] != task)
@@ -118,16 +132,18 @@ async def test_a_repeating_task_carries_its_cover_page_forward(queue, family):
 # ---------------------------------------------------------------------------
 
 
-async def _finished(db, family, cover=COVER, **over):
+async def _finished(db, family, keys, cover=COVER, **over):
     task = await _post(db, family, cover=cover, **over)
+    await agree(db, keys["parent"], task)
     await db.act(family["child"], task, Action.CLAIM, at=NOW + 10)
+    await agree(db, keys["child"], task)
     await db.act(family["child"], task, Action.MARK_DONE, at=NOW + DAY)
     return task
 
 
-async def test_ungraded_work_is_graded_at_the_deemed_grade_once_the_period_runs_out(queue, family):
+async def test_ungraded_work_is_graded_at_the_deemed_grade_once_the_period_runs_out(queue, family, keys):
     _, db = queue
-    task = await _finished(db, family)
+    task = await _finished(db, family, keys)
     waiting = await db.get(family["child"], task, at=NOW + DAY + 3 * DAY)
     assert waiting["state"] == "done"
     deemed = await db.get(family["child"], task, at=NOW + DAY + 3 * DAY + 1)
@@ -140,41 +156,43 @@ async def test_ungraded_work_is_graded_at_the_deemed_grade_once_the_period_runs_
     assert appealed["state"] == "appealed"
 
 
-async def test_a_purchaser_who_grades_in_time_is_not_overruled(queue, family):
+async def test_a_purchaser_who_grades_in_time_is_not_overruled(queue, family, keys):
     _, db = queue
-    task = await _finished(db, family)
+    task = await _finished(db, family, keys)
     await db.act(family["parent"], task, Action.ASSESS, grade="Spotless", at=NOW + 2 * DAY)
     later = await db.get(family["parent"], task, at=NOW + 30 * DAY)
     assert later["assessment"]["grade"] == "Spotless" and "deemed" not in later["assessment"]
 
 
-async def test_a_late_grade_after_the_period_is_refused_because_it_was_already_deemed(queue, family):
+async def test_a_late_grade_after_the_period_is_refused_because_it_was_already_deemed(queue, family, keys):
     _, db = queue
-    task = await _finished(db, family)
+    task = await _finished(db, family, keys)
     with pytest.raises(ValueError, match="cannot be given 'assess'"):
         await db.act(family["parent"], task, Action.ASSESS, grade="Not done", at=NOW + 10 * DAY)
     assert (await db.get(family["parent"], task, at=NOW + 10 * DAY))["assessment"]["deemed"] is True
 
 
-async def test_a_list_read_deems_too(queue, family):
+async def test_a_list_read_deems_too(queue, family, keys):
     _, db = queue
-    task = await _finished(db, family)
+    task = await _finished(db, family, keys)
     listed = {t["task_id"]: t for t in await db.tasks_of(family["parent"], at=NOW + 10 * DAY)}
     assert listed[task]["assessment"]["deemed"] is True
 
 
-async def test_a_deemed_grade_takes_the_late_discount_like_any_other(queue, family):
+async def test_a_deemed_grade_takes_the_late_discount_like_any_other(queue, family, keys):
     _, db = queue
     task = await _post(db, family, cover=COVER, late={"kind": "discount", "pct_per_day": 10})
+    await agree(db, keys["parent"], task)
     await db.act(family["child"], task, Action.CLAIM, at=NOW + 10)
+    await agree(db, keys["child"], task)
     await db.act(family["child"], task, Action.MARK_DONE, at=DUE + DAY)  # one day late
     deemed = await db.get(family["parent"], task, at=DUE + 5 * DAY)
     assert deemed["assessment"]["sats"] == 720 and deemed["assessment"]["deemed"] is True
 
 
-async def test_a_cover_page_without_a_deemed_grade_waits_for_the_purchaser(queue, family):
+async def test_a_cover_page_without_a_deemed_grade_waits_for_the_purchaser(queue, family, keys):
     _, db = queue
-    task = await _finished(db, family, cover={"deliverables": ["fr.ts"]})
+    task = await _finished(db, family, keys, cover={"deliverables": ["fr.ts"]})
     assert (await db.get(family["parent"], task, at=NOW + 90 * DAY))["state"] == "done"
 
 

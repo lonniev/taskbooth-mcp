@@ -87,6 +87,12 @@ mcp = FastMCP(
         "whose text and hash taskbooth_standard_terms returns. Finished work the purchaser "
         "leaves ungraded past the cover page's deemed-acceptance period is graded at its "
         "deemed grade. Every amount is in sats.\n\n"
+        "A task with a cover page is a contract once both parties sign the same offer: "
+        "taskbooth_offer_terms shows the statement and its hash. The purchaser signs before "
+        "anyone may claim it, and the performer signs before marking it done. An agent with "
+        "its own key calls taskbooth_sign_offer as a signed request; anyone else calls "
+        "taskbooth_request_offer_signature, replies to the DM, then calls "
+        "taskbooth_receive_offer_signature.\n\n"
         "taskbooth_calendar_publish mints a calendar feed of your tasks for a phone's "
         "calendar app; taskbooth_calendar_list and taskbooth_calendar_revoke manage it.\n\n"
         "taskbooth_list_tasks shows every task you have a part in; taskbooth_get_task "
@@ -139,6 +145,10 @@ CONFIRM_DEPOSIT_UUID = "118e4115-a77d-4569-9162-e62a81ce6088"
 REQUEST_MILESTONE_UUID = "bc0046f7-0c57-4866-ac2f-9850b3adfcce"
 CONFIRM_MILESTONE_UUID = "04b1d2a2-9280-468b-935c-06c6593c3b60"
 STANDARD_TERMS_UUID = "e9653c73-6503-45af-a0b5-1e336ebe7660"
+OFFER_TERMS_UUID = "ede94cef-da9f-43c8-818d-0cccffdfb9fe"
+SIGN_OFFER_UUID = "ebb9aa17-2ab9-4e30-b19a-2adae5524231"
+REQUEST_OFFER_SIGNATURE_UUID = "28ed89a0-b1c5-45cd-a77b-de8ef919d391"
+RECEIVE_OFFER_SIGNATURE_UUID = "599ac87b-fa6d-405d-8509-280b30bdd49c"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -192,6 +202,14 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Say the sats for a task's milestone arrived"),
     _identity(STANDARD_TERMS_UUID, "standard_terms", "free", "The Standard Terms", READS,
               "The MakerMarket Standard Terms a cover page puts a job under, with the hash a signature covers"),
+    _identity(OFFER_TERMS_UUID, "offer_terms", "read", "Read the offer to sign", READS,
+              "A task's terms as the one statement both parties sign, its hash, and who has signed"),
+    _identity(SIGN_OFFER_UUID, "sign_offer", "write", "Sign the offer", WRITES,
+              "Sign a task's offer with your own key, by calling this tool as a signed request"),
+    _identity(REQUEST_OFFER_SIGNATURE_UUID, "request_offer_signature", "write", "Ask to sign by DM", WRITES_REMOTE,
+              "Have the offer sent to you as a Nostr DM, to sign by replying"),
+    _identity(RECEIVE_OFFER_SIGNATURE_UUID, "receive_offer_signature", "write", "Collect a DM signature",
+              WRITES_REMOTE, "Collect your signed reply to the offer and keep it as your signature"),
     _identity(CONFIRM_PAID_UUID, "confirm_paid", "write", "Confirm payment", WRITES,
               "Say the sats for an owed task arrived"),
     _identity(SAVE_RUBRIC_TEMPLATE_UUID, "save_rubric_template", "write", "Save a rubric template", WRITES,
@@ -713,6 +731,89 @@ async def confirm_milestone(task_id: str, index: int, npub: PatronNpub = "") -> 
     """
     db = await store()
     task = await _do(db.confirm_advance(runtime.resolve_npub(npub), str(task_id), index))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(OFFER_TERMS_UUID)
+async def offer_terms(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """The offer both parties sign: the task's terms as one statement, its sha256, and the signatures so far.
+
+    Args:
+        task_id: The task.
+    """
+    db = await store()
+    return {"ok": True, **await _do(db.offer(runtime.resolve_npub(npub), str(task_id)))}
+
+
+@tool
+@runtime.paid_tool(SIGN_OFFER_UUID)
+async def sign_offer(task_id: str, statement_hash: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Sign a task's offer with your own Nostr key, as a NIP-98 signed request.
+
+    The request you sign carries statement_hash, so the signed request itself is
+    your signature. The purchaser signs while the task is open; the performer
+    signs once they have claimed it. Without your own key, use
+    taskbooth_request_offer_signature instead.
+
+    Args:
+        task_id: The task.
+        statement_hash: The sha256 taskbooth_offer_terms returned for the offer you read.
+    """
+    from tollbooth.tools.signature import signed_request_record
+
+    me = runtime.resolve_npub(npub)
+    record = signed_request_record(str(statement_hash))
+    if record is None or record["signer"] != me:
+        raise ValueError(
+            "This call is not signed with your own key, so it cannot stand as your signature. "
+            "Call taskbooth_request_offer_signature to sign by replying to a DM instead."
+        )
+    db = await store()
+    task = await _do(db.sign(me, str(task_id), record, operator_npub=runtime.operator_npub()))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(REQUEST_OFFER_SIGNATURE_UUID)
+async def request_offer_signature(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Have a task's offer sent to you as a Nostr DM, to sign by replying.
+
+    After calling this, STOP and wait until you have replied to the DM from your
+    Nostr client. Then call taskbooth_receive_offer_signature once, with the nonce
+    and statement_hash returned here.
+
+    Args:
+        task_id: The task.
+    """
+    me = runtime.resolve_npub(npub)
+    db = await store()
+    offer = await _do(db.offer(me, str(task_id)))
+    sent = await runtime.request_signature(me, offer["statement"])
+    if not sent.get("success"):
+        raise ValueError(sent.get("error") or "The signature request could not be sent.")
+    return {"ok": True, "nonce": sent["nonce"], "statement_hash": sent["statement_hash"],
+            "rendezvous_relay": sent.get("rendezvous_relay", ""), "message": sent.get("message", "")}
+
+
+@tool
+@runtime.paid_tool(RECEIVE_OFFER_SIGNATURE_UUID)
+async def receive_offer_signature(
+    task_id: str, nonce: str, statement_hash: str, npub: PatronNpub = "",
+) -> dict[str, Any]:
+    """Collect your signed reply to the offer DM and keep it as your signature. Call once.
+
+    Args:
+        task_id: The task.
+        nonce: The nonce taskbooth_request_offer_signature returned.
+        statement_hash: The statement_hash it returned.
+    """
+    me = runtime.resolve_npub(npub)
+    got = await runtime.receive_signature(me, str(nonce), str(statement_hash))
+    if not got.get("success"):
+        raise ValueError(got.get("error") or "No signed reply was found.")
+    db = await store()
+    task = await _do(db.sign(me, str(task_id), got["signature"], operator_npub=runtime.operator_npub()))
     return {"ok": True, "task": task}
 
 
