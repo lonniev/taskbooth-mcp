@@ -1,1 +1,0 @@
-- `assets/og-image.png`: a share image for listings.

@@ -1,1 +1,0 @@
-- `taskbooth_btc_price(fiat, years)`: what one bitcoin costs today and on this day in earlier years, read from mempool.space and passed on with the time each price was observed. Free, and takes no npub.
