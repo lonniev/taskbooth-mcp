@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.3.0] — 2026-11-17
+
+### Added
+
+- Organizations and Projects: `save_organization`, `list_organizations`, `get_organization`, `save_member`, `remove_member`, `save_project`, `archive_project` and `get_project`. An Organization's owner adds members by npub; members see its Projects and every task filed in them (a new read-only `member` role) and may post tasks into them; only the owner changes the Organization, its members or its Projects. A Project carries a brief, a budget, a default circle and default cover terms, and `get_project` adds up what its tasks committed and paid.
+- `post_task`'s `org_id` and `project_id` are now checked: both or neither, a Project of that Organization, not archived, and the poster must own or belong to the Organization.
+- Sites sharing this Operator: `post_task`, `list_tasks` and `calendar_publish` take an optional `site` (e.g. "chipin"). A task is stamped with the site that posted it; a site lists its own tasks and every task posted with no site; a feed keeps to its site. Omitting `site` lists every task, as before.
+
 ## [0.2.1] — 2026-11-17
 
 ### Fixed
