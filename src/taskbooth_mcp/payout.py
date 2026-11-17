@@ -1,4 +1,4 @@
-"""The invoice a purchaser pays when a task is Owed.
+"""The invoices a purchaser pays: a claimed task's deposit, and an Owed task's award.
 
 The reward goes from the purchaser's own wallet to the performer's. This
 Operator never holds it. What it does is fetch an invoice from the performer's
@@ -68,26 +68,30 @@ def checked_invoice(value: Any) -> str:
     return text
 
 
-async def _recorded(db: Any, task: dict[str, Any], invoice: str, *, at: int, whose: str,
-                    details: dict[str, Any]) -> dict[str, Any]:
-    """Check an invoice against the grade and write its payment hash down before it is shown."""
-    sats = int(task["assessment"]["sats"])
+def _checked(invoice: str, sats: int, *, at: int, whose: str, details: dict[str, Any]) -> dict[str, Any]:
+    """An invoice read and held to exactly ``sats``, as the record kept before anyone sees it."""
     try:
         asked = bolt11.decode(invoice)
     except bolt11.Bolt11Error as exc:
         raise ValueError(f"{whose} gave no usable invoice: {exc}") from exc
     if asked.amount_msat != sats * 1000:
-        # Never shown: a payee must not be able to ask for more than the grade earns.
+        # Never shown: a payee must not be able to ask for more than is due.
         raise ValueError(f"{whose} gave an invoice for a different amount than the {sats} sats owed.")
     if asked.expires_at <= at + EXPIRY_MARGIN_SECONDS:
         raise ValueError(f"{whose} gave an invoice that has already expired.")
-    payout = {
+    return {
         "sats": sats,
         "invoice": invoice,
         "payment_hash": asked.payment_hash,
         "expires_at": asked.expires_at,
         "requested_at": at,
     } | details
+
+
+async def _recorded(db: Any, task: dict[str, Any], invoice: str, *, at: int, whose: str,
+                    details: dict[str, Any]) -> dict[str, Any]:
+    """Check an invoice against the grade and write its payment hash down before it is shown."""
+    payout = _checked(invoice, int(task["assessment"]["sats"]), at=at, whose=whose, details=details)
     # The payment hash is on record before the invoice leaves this Operator.
     await db.save_payout(task["task_id"], payout)
     return as_handed_over(payout)
@@ -154,3 +158,47 @@ async def invoice_for(
         db, task, invoice, at=at, whose="The performer's wallet",
         details={"method": "invoice", "address": address, "requested_by": requested_by},
     )
+
+
+async def deposit_invoice(
+    db: Any,
+    task: dict[str, Any],
+    *,
+    address: str,
+    invoice: Any = "",
+    requested_by: str,
+    at: int | None = None,
+    resolve: Resolver | None = None,
+) -> dict[str, Any]:
+    """The invoice that pays a claimed task's deposit, held to exactly the deposit's sats.
+
+    ``task`` is the store's own copy, from ``db.deposit_task``. A performer's
+    own ``invoice`` replaces any kept; otherwise one still fresh is handed back,
+    or a new one is fetched from ``address``. Its payment hash is written onto
+    the task before it is shown.
+
+    Raises:
+        ValueError: no usable invoice, or one for any other amount.
+    """
+    at = int(time.time()) if at is None else at
+    deposit = task["deposit"]
+    sats = int(deposit["sats"])
+    if not invoice and deposit.get("invoice") and deposit["expires_at"] > at + EXPIRY_MARGIN_SECONDS:
+        return as_handed_over(deposit)
+    if invoice:
+        record = _checked(checked_invoice(invoice), sats, at=at, whose="Your wallet",
+                          details={"method": "performer_invoice", "requested_by": requested_by})
+    else:
+        if not address:
+            raise ValueError(
+                f"The performer has not set a payout_address. They make an invoice for exactly {sats} sats "
+                "in their own wallet and pass it to taskbooth_request_deposit as invoice."
+            )
+        try:
+            fetched = await (resolve or resolve_lightning_address)(checked_address(address), sats)
+        except LnurlResolutionError as exc:
+            raise ValueError(f"The performer's wallet gave no usable invoice: {exc}") from exc
+        record = _checked(fetched, sats, at=at, whose="The performer's wallet",
+                          details={"method": "invoice", "requested_by": requested_by})
+    await db.save_deposit(requested_by, task, record, at)
+    return as_handed_over(record)

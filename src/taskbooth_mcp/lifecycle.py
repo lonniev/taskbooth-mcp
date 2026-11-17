@@ -19,6 +19,10 @@ Four things the arrows above leave out:
 - **Missed**: a task whose purchaser chose "cancel if missed" closes itself when
   its needed-by time passes before it is done. Like expired, nothing in the
   background does it; the first read after the deadline records it.
+- **Deposit**: a task may ask for part of its top grade when it is claimed.
+  The purchaser pays it straight to the performer while the task is claimed,
+  and the award later pays only what the grade earns beyond it. It moves no
+  state; it is a record on the task.
 - A final assessment worth sats is **Owed** until it is paid. One worth zero
   sats stays Assessed, final, with nothing to pay. That is a finished task, and
   it is different from Rejected.
@@ -35,12 +39,14 @@ from enum import StrEnum
 __all__ = [
     "EXPIRED",
     "LATE_KINDS",
+    "MAX_DEPOSIT_PCT",
     "Action",
     "Facts",
     "Role",
     "Standing",
     "State",
     "days_late",
+    "deposit_sats",
     "is_finished",
     "late_sats",
     "next_needed_by",
@@ -91,6 +97,8 @@ class Action(StrEnum):
     EDIT = "edit"
     NUDGE_PAY = "nudge_pay"
     NUDGE_DUE = "nudge_due"
+    DEPOSIT_INVOICE = "deposit_invoice"
+    CONFIRM_DEPOSIT = "confirm_deposit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +150,11 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     # says a deadline is near.
     (State.OWED, Action.NUDGE_PAY): frozenset({Role.PERFORMER}),
     (State.CLAIMED, Action.NUDGE_DUE): frozenset({Role.PURCHASER}),
+    # A deposit is asked for while the work is under way, and its arrival may
+    # be confirmed until the work is graded, after which the award accounts for it.
+    (State.CLAIMED, Action.DEPOSIT_INVOICE): frozenset({Role.PURCHASER, Role.PERFORMER}),
+    (State.CLAIMED, Action.CONFIRM_DEPOSIT): frozenset({Role.PERFORMER}),
+    (State.DONE, Action.CONFIRM_DEPOSIT): frozenset({Role.PERFORMER}),
 }
 
 
@@ -190,7 +203,7 @@ def step(
             return Standing(State.PAID, final=True)
         case Action.MISS:
             return Standing(State.MISSED, final=True)
-        case Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE:
+        case Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE | Action.DEPOSIT_INVOICE | Action.CONFIRM_DEPOSIT:
             return now
     raise ValueError(f"Unknown action '{action}'.")  # pragma: no cover — the enum is closed
 
@@ -251,3 +264,14 @@ def late_sats(sats: int, pct_per_day: int, days: int) -> int:
         return sats
     kept = max(0, 100 - pct_per_day * days)
     return sats * kept // 100
+
+
+#: The most of a task's top grade a deposit may ask for.
+MAX_DEPOSIT_PCT = 90
+
+
+def deposit_sats(top_sats: int, pct: int) -> int:
+    """The deposit a claim asks for: ``pct`` of the top grade, rounded down."""
+    if pct <= 0 or top_sats <= 0:
+        return 0
+    return top_sats * min(pct, MAX_DEPOSIT_PCT) // 100

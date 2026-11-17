@@ -34,12 +34,14 @@ from taskbooth_mcp import feed
 from taskbooth_mcp.lifecycle import (
     EXPIRED,
     LATE_KINDS,
+    MAX_DEPOSIT_PCT,
     Action,
     Facts,
     Role,
     Standing,
     State,
     days_late,
+    deposit_sats,
     late_sats,
     next_needed_by,
     standing,
@@ -57,7 +59,7 @@ NUDGE_DUE_WINDOW = 2 * 86_400
 #: The least time between two reminders of one kind about one task.
 NUDGE_GAP = 12 * 3_600
 #: The task fields an edit may change, and nothing else.
-EDITABLE = ("title", "description", "rubric", "audience", "needed_by", "every_days", "late")
+EDITABLE = ("title", "description", "rubric", "audience", "needed_by", "every_days", "late", "deposit_pct")
 
 _TASK_COLUMNS = (
     "task_id, purchaser_npub, performer_npub, state, final, needed_by, series_id, occurrence, "
@@ -274,6 +276,7 @@ class TaskStore:
         view.setdefault("late", {"kind": "full"})
         view["days_late"] = self._days_late(task, at)
         view.setdefault("nudges", {})
+        view.setdefault("deposit_pct", 0)
         return view
 
     @staticmethod
@@ -288,6 +291,12 @@ class TaskStore:
         if task["state"] == State.CLAIMED:
             return days_late(task["needed_by"], at)
         return 0
+
+    @staticmethod
+    def _deposit_paid(task: dict[str, Any]) -> int:
+        """The sats of a deposit the performer confirmed arrived, or 0."""
+        deposit = task.get("deposit") or {}
+        return int(deposit["sats"]) if deposit.get("paid_at") else 0
 
     @staticmethod
     def _wants_miss(task: dict[str, Any], at: int) -> bool:
@@ -393,6 +402,7 @@ class TaskStore:
         project_id: str = "",
         purchaser_signature: str = "",
         late: dict[str, Any] | None = None,
+        deposit_pct: int = 0,
         at: int | None = None,
     ) -> str:
         """Post a task. The purchaser may name themselves in the audience."""
@@ -401,7 +411,8 @@ class TaskStore:
         needed_by, data = self._terms(
             purchaser, title=title, rubric=rubric, audience=audience, needed_by=needed_by,
             description=description, earliest_start=earliest_start, every_days=every_days,
-            tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late, at=at,
+            tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late,
+            deposit_pct=deposit_pct, at=at,
         )
         task_id = new_id()
         await self._insert(
@@ -415,7 +426,7 @@ class TaskStore:
     def _terms(
         purchaser: str, *, title: Any, rubric: Any, audience: Any, needed_by: Any, description: Any,
         earliest_start: Any, every_days: Any, tie_breaker: Any, assessors: Any, signature: Any,
-        late: Any, at: int,
+        late: Any, at: int, deposit_pct: Any = 0,
     ) -> tuple[int, dict[str, Any]]:
         """A task's terms checked as a post or an edit hands them in: its needed-by time and sealed data."""
         if not isinstance(audience, list) or not 1 <= len(audience) <= MAX_PEOPLE:
@@ -442,6 +453,8 @@ class TaskStore:
             "every_days": _whole(every_days, "repeat interval in days", most=3660),
             "signatures": {"purchaser": _text(signature, "signature", MAX_SIGNATURE), "performer": ""},
             "late": checked_late(late),
+            # Part of the top grade paid when the task is claimed; 0 asks for none.
+            "deposit_pct": _whole(deposit_pct, "deposit percentage", most=MAX_DEPOSIT_PCT),
         }
 
     async def _insert(
@@ -535,6 +548,11 @@ class TaskStore:
                 sats = late_sats(chosen["sats"], int(rule["pct_per_day"]), days)
                 late_off = {"full_sats": chosen["sats"], "days_late": days,
                             "pct_off": min(100, int(rule["pct_per_day"]) * days)}
+            paid = self._deposit_paid(task)
+            if paid:
+                # The deposit was part of the reward, paid early: the award is what remains.
+                late_off |= {"earned_sats": sats, "deposit_sats": paid}
+                sats = max(0, sats - paid)
             facts = Facts(sats=sats, top_grade=top)
             detail |= {"grade": chosen["name"], "sats": sats, **late_off}
         elif action is Action.ACCEPT:
@@ -553,10 +571,17 @@ class TaskStore:
                     "performer": _text(performer_signature, "signature", MAX_SIGNATURE),
                 }
                 data["claimed_at"] = at
+                asked = deposit_sats(max(g["sats"] for g in data["rubric"]["grades"]), int(data.get("deposit_pct") or 0))
+                if asked:
+                    data["deposit"] = {"pct": int(data["deposit_pct"]), "sats": asked}
             case Action.RELEASE:
                 performer = None
                 data["signatures"] = {**data["signatures"], "performer": ""}
                 data.pop("claimed_at", None)
+                gone = data.pop("deposit", None) or {}
+                if gone.get("paid_at"):
+                    # Paid straight to that performer's wallet; nothing here can take it back.
+                    detail["deposit_kept_by_performer"] = gone["sats"]
             case Action.MARK_DONE:
                 data["accomplished_at"] = at
             case Action.ASSESS:
@@ -570,7 +595,8 @@ class TaskStore:
                 data["assessment"] = {**data["assessment"], "appeal": {"reasons": reasons, "at": at}}
             case Action.DECIDE_APPEAL:
                 first = data["assessment"]
-                kept = {k: v for k, v in first.items() if k not in ("full_sats", "days_late", "pct_off")}
+                kept = {k: v for k, v in first.items()
+                        if k not in ("full_sats", "days_late", "pct_off", "earned_sats", "deposit_sats")}
                 data["assessment"] = {
                     **kept, "grade": detail["grade"], "sats": detail["sats"], **late_off,
                     "appeal": {
@@ -701,7 +727,7 @@ class TaskStore:
             else task["earliest_start"],
             every_days=merged["every_days"], tie_breaker=task["tie_breaker"],
             assessors=[n for n in task["assessors"] if n != task["purchaser"]],
-            signature=signature, late=merged["late"], at=at,
+            signature=signature, late=merged["late"], deposit_pct=merged["deposit_pct"] or 0, at=at,
         )
         data = {k: task[k] for k in self._sealed_keys(task)} | terms
         data.pop("nudges", None)
@@ -762,6 +788,7 @@ class TaskStore:
             "title", "description", "rubric", "audience", "assessors", "tie_breaker", "every_days",
         )}
         data["late"] = task.get("late") or {"kind": "full"}
+        data["deposit_pct"] = int(task.get("deposit_pct") or 0)
         data["earliest_start"] = task["earliest_start"] + shift if task["earliest_start"] else 0
         data["signatures"] = {"purchaser": task["signatures"]["purchaser"], "performer": ""}
         await self._insert(
@@ -772,6 +799,44 @@ class TaskStore:
         await self._neon._execute(
             f"UPDATE {self._t('taskbooth_tasks')} SET rolled = 1 WHERE task_id = $1", [task["task_id"]]
         )
+
+    # -- deposits ------------------------------------------------------------
+
+    async def _deposit_move(self, npub: str, task_id: str, action: Action) -> dict[str, Any]:
+        """The task, once ``npub`` may make this deposit move on it."""
+        task = await self._load(task_id)
+        roles = self._roles(task, npub) if task else frozenset()
+        if task is None or not self._may_see(task, roles):
+            raise NotYours(f"No task {task_id!r} is yours to see.")
+        step(Standing(State(task["state"]), task["final"]), action, roles)
+        if not (task.get("deposit") or {}).get("sats"):
+            raise ValueError("This task asks for no deposit.")
+        if task["deposit"].get("paid_at"):
+            raise ValueError("This task's deposit is already paid.")
+        return task
+
+    async def deposit_task(self, npub: str, task_id: str) -> dict[str, Any]:
+        """A claimed task whose deposit is still to pay, for the purchaser or the performer asking."""
+        return await self._deposit_move(npub, task_id, Action.DEPOSIT_INVOICE)
+
+    async def save_deposit(self, npub: str, task: dict[str, Any], invoice: dict[str, Any], at: int) -> None:
+        """Keep a checked deposit invoice on the task, with its payment hash, before anyone sees it."""
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        data["deposit"] = {**task["deposit"], **invoice}
+        await self._bump(task, data, at, npub, Action.DEPOSIT_INVOICE,
+                         {"sats": invoice["sats"], "payment_hash": invoice["payment_hash"]})
+
+    async def confirm_deposit(self, npub: str, task_id: str, at: int | None = None) -> dict[str, Any]:
+        """The performer says the deposit arrived. Its invoice must have been made here first."""
+        at = int(time.time()) if at is None else at
+        task = await self._deposit_move(npub, task_id, Action.CONFIRM_DEPOSIT)
+        if not task["deposit"].get("payment_hash"):
+            raise ValueError("No deposit invoice was made for this task, so there is no payment to confirm.")
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        data["deposit"] = {**task["deposit"], "paid_at": at}
+        await self._bump(task, data, at, npub, Action.CONFIRM_DEPOSIT,
+                         {"sats": task["deposit"]["sats"], "payment_hash": task["deposit"]["payment_hash"]})
+        return await self.get(npub, task_id, at)
 
     # -- payouts -------------------------------------------------------------
 

@@ -17,6 +17,7 @@ from taskbooth_mcp.lifecycle import (
     Standing,
     State,
     days_late,
+    deposit_sats,
     is_finished,
     late_sats,
     next_needed_by,
@@ -45,6 +46,10 @@ LEGAL: dict[tuple[State, Action, Role], Standing] = {
     (State.POSTED, Action.EDIT, Role.PURCHASER): Standing(State.POSTED),
     (State.OWED, Action.NUDGE_PAY, Role.PERFORMER): Standing(State.OWED),
     (State.CLAIMED, Action.NUDGE_DUE, Role.PURCHASER): Standing(State.CLAIMED),
+    (State.CLAIMED, Action.DEPOSIT_INVOICE, Role.PURCHASER): Standing(State.CLAIMED),
+    (State.CLAIMED, Action.DEPOSIT_INVOICE, Role.PERFORMER): Standing(State.CLAIMED),
+    (State.CLAIMED, Action.CONFIRM_DEPOSIT, Role.PERFORMER): Standing(State.CLAIMED),
+    (State.DONE, Action.CONFIRM_DEPOSIT, Role.PERFORMER): Standing(State.DONE),
 }
 SOME_SATS = Facts(sats=800)
 
@@ -199,3 +204,11 @@ def test_late_sats_take_a_share_off_each_day_and_never_go_below_zero():
     assert late_sats(1000, 60, 2) == 0
     assert late_sats(1000, 100, 1) == 0
     assert late_sats(0, 10, 3) == 0
+
+
+def test_a_deposit_is_a_share_of_the_top_grade_rounded_down_and_capped():
+    assert deposit_sats(1000, 0) == 0
+    assert deposit_sats(1000, 25) == 250
+    assert deposit_sats(999, 10) == 99
+    assert deposit_sats(1000, 100) == 900  # never more than 90%
+    assert deposit_sats(0, 50) == 0
