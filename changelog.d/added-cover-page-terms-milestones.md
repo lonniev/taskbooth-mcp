@@ -1,0 +1,6 @@
+- The MakerMarket Standard Terms, version v0, are published in the Operator, and each version is fixed by the sha256 of its text. `taskbooth_standard_terms` returns the text and hash, and is free. Escrow is not offered under v0, so every job is paid over Lightning.
+- A task may carry a cover page (`cover` on `post_task` and `edit_task`) with a spec link and hash, deliverables, a deemed grade and its period, an IP option, and confidentiality. The Operator stamps the terms version and hash on it, and refuses escrow fields for now.
+- Finished work left ungraded past the cover page's deemed-acceptance period is graded at the deemed grade on the next read, marked `deemed`. The performer may still appeal it.
+- Milestones: dated part-payments of the top grade (`milestones` on `post_task` and `edit_task`). `taskbooth_request_milestone` and `taskbooth_confirm_milestone` work like the deposit's tools, from each milestone's date. With the deposit they ask for at most 90%.
+- An assessment now reports `paid_ahead_sats` (the deposit plus confirmed milestones) in place of `deposit_sats`, and the award pays only what the grade earns beyond it.
+- A performer who gives a job back records `deposit_owed_back`; one released by the purchaser keeps the deposit, and either way keeps paid milestones.

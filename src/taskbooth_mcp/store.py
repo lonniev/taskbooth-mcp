@@ -30,7 +30,7 @@ import secrets
 import time
 from typing import Any
 
-from taskbooth_mcp import feed
+from taskbooth_mcp import feed, terms
 from taskbooth_mcp.lifecycle import (
     EXPIRED,
     LATE_KINDS,
@@ -59,7 +59,8 @@ NUDGE_DUE_WINDOW = 2 * 86_400
 #: The least time between two reminders of one kind about one task.
 NUDGE_GAP = 12 * 3_600
 #: The task fields an edit may change, and nothing else.
-EDITABLE = ("title", "description", "rubric", "audience", "needed_by", "every_days", "late", "deposit_pct")
+EDITABLE = ("title", "description", "rubric", "audience", "needed_by", "every_days", "late", "deposit_pct",
+            "cover", "milestones")
 
 _TASK_COLUMNS = (
     "task_id, purchaser_npub, performer_npub, state, final, needed_by, series_id, occurrence, "
@@ -145,6 +146,109 @@ def checked_late(value: Any) -> dict[str, Any]:
         return {"kind": "discount", "pct_per_day": _whole(value.get("pct_per_day"), "percent off each day late",
                                                           least=1, most=100)}
     return {"kind": value["kind"]}
+
+
+#: What a cover page may say about who owns the finished work.
+IP_OPTIONS = ("assign", "license", "worker_keeps", "custom")
+#: Cover-page fields for escrow, which these terms do not offer yet.
+ESCROW_FIELDS = ("escrow_enabled", "escrow_threshold_sats", "arbiter_npub", "arbiter_advert_id", "arbiter_fee",
+                 "arbiter_fee_payer", "refund_timelock_days", "refund_lock_height", "deemed_lock_height",
+                 "escrow_outpoint")
+_COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deemed_acceptance_days", "ip_option",
+                 "ip_custom_text", "confidential", "client_is_consumer", "third_party_allowed", "governing_law",
+                 "venue")
+MAX_DELIVERABLES = 20
+MAX_DEEMED_DAYS = 60
+MAX_MILESTONES = 6
+
+
+def _flag(value: Any, what: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"The {what} is true or false.")
+    return value
+
+
+def checked_cover(value: Any, rubric: dict[str, Any]) -> dict[str, Any] | None:
+    """A job's cover page as it is stored, or ``None`` for a task that has none.
+
+    The Standard Terms' version and hash are stamped here, never taken from the caller.
+    """
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("A cover page is an object of named fields.")
+    escrow = sorted(set(value) & set(ESCROW_FIELDS))
+    if escrow:
+        raise ValueError(f"Escrow is not offered yet, so these cannot be set: {', '.join(escrow)}.")
+    unknown = sorted(set(value) - set(_COVER_FIELDS))
+    if unknown:
+        raise ValueError(f"A cover page has no field {', '.join(unknown)}. Its fields: {', '.join(_COVER_FIELDS)}.")
+
+    url = _text(value.get("spec_url", ""), "spec URL", 500)
+    if url and (not url.startswith("https://") or any(c.isspace() for c in url)):
+        raise ValueError("The spec URL must be an https:// address.")
+    digest = _text(value.get("spec_hash", ""), "spec hash", 64)
+    if digest and (len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
+        raise ValueError("The spec hash is a sha256 in 64 lowercase hex characters.")
+    items = value.get("deliverables", [])
+    if not isinstance(items, list) or len(items) > MAX_DELIVERABLES:
+        raise ValueError(f"The deliverables are a list of at most {MAX_DELIVERABLES}.")
+    deemed = value.get("deemed_grade", "")
+    if deemed:
+        deemed = _grade(rubric, deemed)[0]["name"]
+    days = value.get("deemed_acceptance_days", 0)
+    if deemed:
+        days = _whole(days, "deemed-acceptance period in days", least=1, most=MAX_DEEMED_DAYS)
+    elif days:
+        raise ValueError("A deemed-acceptance period needs a deemed grade to award when it runs out.")
+    ip = value.get("ip_option", "assign")
+    if ip not in IP_OPTIONS:
+        raise ValueError(f"The IP option is one of: {', '.join(IP_OPTIONS)}.")
+    custom = _text(value.get("ip_custom_text", ""), "custom IP terms", MAX_TEXT, required=ip == "custom")
+
+    return {
+        "terms_version": terms.CURRENT,
+        "terms_hash": terms.terms_hash(),
+        "spec_url": url,
+        "spec_hash": digest,
+        "deliverables": [_text(d, "deliverable", 200, required=True) for d in items],
+        "deemed_grade": deemed,
+        "deemed_acceptance_days": days,
+        "ip_option": ip,
+        "ip_custom_text": custom if ip == "custom" else "",
+        "confidential": _flag(value.get("confidential", False), "confidentiality flag"),
+        "client_is_consumer": _flag(value.get("client_is_consumer", False), "consumer flag"),
+        "third_party_allowed": _flag(value.get("third_party_allowed", False), "third-party flag"),
+        "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
+        "venue": _text(value.get("venue", ""), "venue", 200),
+    }
+
+
+def checked_milestones(value: Any, *, deposit_pct: int, needed_by: int, at: int) -> list[dict[str, Any]]:
+    """Dated part-payments of the top grade, soonest first.
+
+    With the deposit they ask for at most :data:`MAX_DEPOSIT_PCT` of the top
+    grade, so the grade always has something left to decide.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_MILESTONES:
+        raise ValueError(f"Milestones are a list of at most {MAX_MILESTONES}.")
+    checked = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ValueError("Each milestone is an object with a name, a due_at time and a pct.")
+        due = _whole(entry.get("due_at"), "milestone's due_at time")
+        if not at < due <= needed_by:
+            raise ValueError("A milestone falls due after now and no later than the needed-by time.")
+        checked.append({
+            "name": _text(entry.get("name"), "milestone name", 60, required=True),
+            "due_at": due,
+            "pct": _whole(entry.get("pct"), "milestone's percentage", least=1, most=MAX_DEPOSIT_PCT),
+        })
+    if deposit_pct + sum(m["pct"] for m in checked) > MAX_DEPOSIT_PCT:
+        raise ValueError(f"The deposit and milestones together ask for at most {MAX_DEPOSIT_PCT}% of the top grade.")
+    return sorted(checked, key=lambda m: m["due_at"])
 
 
 def _grade(rubric: dict[str, Any], name: Any) -> tuple[dict[str, Any], bool]:
@@ -277,6 +381,8 @@ class TaskStore:
         view["days_late"] = self._days_late(task, at)
         view.setdefault("nudges", {})
         view.setdefault("deposit_pct", 0)
+        view.setdefault("cover", None)
+        view.setdefault("milestones", [])
         return view
 
     @staticmethod
@@ -293,10 +399,27 @@ class TaskStore:
         return 0
 
     @staticmethod
-    def _deposit_paid(task: dict[str, Any]) -> int:
-        """The sats of a deposit the performer confirmed arrived, or 0."""
-        deposit = task.get("deposit") or {}
-        return int(deposit["sats"]) if deposit.get("paid_at") else 0
+    def _paid_ahead(task: dict[str, Any]) -> int:
+        """The sats the performer confirmed arrived before grading: the deposit and any milestones."""
+        ahead = [task.get("deposit") or {}, *(task.get("milestones") or [])]
+        return sum(int(a["sats"]) for a in ahead if a.get("paid_at"))
+
+    @staticmethod
+    def _wants_deemed(task: dict[str, Any], at: int) -> bool:
+        """Finished work the purchaser did not grade within the cover page's deemed-acceptance period."""
+        cover = task.get("cover") or {}
+        return bool(
+            task["state"] == State.DONE and cover.get("deemed_grade") and task.get("accomplished_at")
+            and int(task["accomplished_at"]) + int(cover["deemed_acceptance_days"]) * 86_400 < at
+        )
+
+    async def _deem(self, task: dict[str, Any], at: int) -> None:
+        """Grade it at the deemed grade, as the terms say. A lost race means someone graded it first."""
+        try:
+            await self.act(task["purchaser"], task["task_id"], Action.ASSESS, grade=task["cover"]["deemed_grade"],
+                           as_operator=True, deemed=True, at=at)
+        except ValueError:
+            return
 
     @staticmethod
     def _wants_miss(task: dict[str, Any], at: int) -> bool:
@@ -337,6 +460,9 @@ class TaskStore:
             task = await self._load(task_id) or task
             if task["every_days"] and not task["rolled"]:
                 await self._recur(task, npub, at)
+        if self._wants_deemed(task, at):
+            await self._deem(task, at)
+            task = await self._load(task_id) or task
         return self._view(task, roles, at)
 
     async def tasks_of(self, npub: str, at: int | None = None) -> list[dict[str, Any]]:
@@ -357,8 +483,11 @@ class TaskStore:
             tasks = [self._task(r) for r in rows]
             missed = [t for t in tasks if self._wants_miss(t, at)]
             stale = [t for t in tasks if self._wants_next(t, at)]
-            if not missed and not stale:
+            deemed = [t for t in tasks if self._wants_deemed(t, at)]
+            if not missed and not stale and not deemed:
                 break
+            for task in deemed:
+                await self._deem(task, at)
             for task in missed:
                 await self._miss(task, at)
             for task in stale:
@@ -403,6 +532,8 @@ class TaskStore:
         purchaser_signature: str = "",
         late: dict[str, Any] | None = None,
         deposit_pct: int = 0,
+        cover: dict[str, Any] | None = None,
+        milestones: list[dict[str, Any]] | None = None,
         at: int | None = None,
     ) -> str:
         """Post a task. The purchaser may name themselves in the audience."""
@@ -412,7 +543,7 @@ class TaskStore:
             purchaser, title=title, rubric=rubric, audience=audience, needed_by=needed_by,
             description=description, earliest_start=earliest_start, every_days=every_days,
             tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late,
-            deposit_pct=deposit_pct, at=at,
+            deposit_pct=deposit_pct, cover=cover, milestones=milestones, at=at,
         )
         task_id = new_id()
         await self._insert(
@@ -426,7 +557,7 @@ class TaskStore:
     def _terms(
         purchaser: str, *, title: Any, rubric: Any, audience: Any, needed_by: Any, description: Any,
         earliest_start: Any, every_days: Any, tie_breaker: Any, assessors: Any, signature: Any,
-        late: Any, at: int, deposit_pct: Any = 0,
+        late: Any, at: int, deposit_pct: Any = 0, cover: Any = None, milestones: Any = None,
     ) -> tuple[int, dict[str, Any]]:
         """A task's terms checked as a post or an edit hands them in: its needed-by time and sealed data."""
         if not isinstance(audience, list) or not 1 <= len(audience) <= MAX_PEOPLE:
@@ -441,10 +572,12 @@ class TaskStore:
         if earliest_start > needed_by:
             raise ValueError("The earliest-start time cannot be after the needed-by time.")
 
+        rubric = checked_rubric(rubric)
+        deposit_pct = _whole(deposit_pct, "deposit percentage", most=MAX_DEPOSIT_PCT)
         return needed_by, {
             "title": _text(title, "title", MAX_TITLE, required=True),
             "description": _text(description, "description", MAX_TEXT),
-            "rubric": checked_rubric(rubric),
+            "rubric": rubric,
             "audience": sorted({checked_npub(n, "audience member") for n in audience}),
             # The purchaser always grades; anyone else named here grades on their behalf.
             "assessors": sorted({purchaser, *(checked_npub(n, "assessor") for n in delegates)}),
@@ -454,7 +587,9 @@ class TaskStore:
             "signatures": {"purchaser": _text(signature, "signature", MAX_SIGNATURE), "performer": ""},
             "late": checked_late(late),
             # Part of the top grade paid when the task is claimed; 0 asks for none.
-            "deposit_pct": _whole(deposit_pct, "deposit percentage", most=MAX_DEPOSIT_PCT),
+            "deposit_pct": deposit_pct,
+            "cover": checked_cover(cover, rubric),
+            "milestones": checked_milestones(milestones, deposit_pct=deposit_pct, needed_by=needed_by, at=at),
         }
 
     async def _insert(
@@ -509,12 +644,14 @@ class TaskStore:
         reasons: str = "",
         performer_signature: str = "",
         as_operator: bool = False,
+        deemed: bool = False,
         at: int | None = None,
     ) -> dict[str, Any]:
         """Make one move on a task, as ``npub``, and return the task as it now stands.
 
-        ``as_operator`` is for this service recording a payment a wallet proved;
-        no npub earns that role by being named anywhere.
+        ``as_operator`` is for this service recording a payment a wallet proved,
+        or grading at the deemed grade (``deemed``); no npub earns that role by
+        being named anywhere.
 
         Raises:
             NotYours: ``npub`` has no part in this task.
@@ -533,6 +670,9 @@ class TaskStore:
             if task["every_days"] and not task["rolled"]:
                 await self._recur(await self._load(task_id) or task, npub, at)
             raise ValueError("The deadline passed before this task was done, so it was cancelled as missed.")
+        if not deemed and self._wants_deemed(task, at):
+            await self._deem(task, at)
+            task = await self._load(task_id) or task
 
         was = Standing(State(task["state"]), task["final"])
         reasons = _text(reasons, "reasons", MAX_TEXT)
@@ -548,11 +688,13 @@ class TaskStore:
                 sats = late_sats(chosen["sats"], int(rule["pct_per_day"]), days)
                 late_off = {"full_sats": chosen["sats"], "days_late": days,
                             "pct_off": min(100, int(rule["pct_per_day"]) * days)}
-            paid = self._deposit_paid(task)
+            paid = self._paid_ahead(task)
             if paid:
-                # The deposit was part of the reward, paid early: the award is what remains.
-                late_off |= {"earned_sats": sats, "deposit_sats": paid}
+                # The deposit and milestones were part of the reward, paid early: the award is what remains.
+                late_off |= {"earned_sats": sats, "paid_ahead_sats": paid}
                 sats = max(0, sats - paid)
+            if deemed:
+                late_off["deemed"] = True
             facts = Facts(sats=sats, top_grade=top)
             detail |= {"grade": chosen["name"], "sats": sats, **late_off}
         elif action is Action.ACCEPT:
@@ -571,17 +713,26 @@ class TaskStore:
                     "performer": _text(performer_signature, "signature", MAX_SIGNATURE),
                 }
                 data["claimed_at"] = at
-                asked = deposit_sats(max(g["sats"] for g in data["rubric"]["grades"]), int(data.get("deposit_pct") or 0))
+                top_sats = max(g["sats"] for g in data["rubric"]["grades"])
+                asked = deposit_sats(top_sats, int(data.get("deposit_pct") or 0))
                 if asked:
                     data["deposit"] = {"pct": int(data["deposit_pct"]), "sats": asked}
+                # What each milestone pays is fixed now, from the price the performer agreed to.
+                data["milestones"] = [{**m, "sats": top_sats * m["pct"] // 100} for m in data.get("milestones") or []]
             case Action.RELEASE:
                 performer = None
                 data["signatures"] = {**data["signatures"], "performer": ""}
                 data.pop("claimed_at", None)
                 gone = data.pop("deposit", None) or {}
                 if gone.get("paid_at"):
-                    # Paid straight to that performer's wallet; nothing here can take it back.
-                    detail["deposit_kept_by_performer"] = gone["sats"]
+                    # Paid straight to that performer's wallet; nothing here can take it back. A
+                    # performer who gives the job back owes it back (terms 14.3); one released keeps it.
+                    key = "deposit_owed_back" if npub == task["performer"] else "deposit_kept_by_performer"
+                    detail[key] = gone["sats"]
+                kept = sum(int(m["sats"]) for m in data.get("milestones") or [] if m.get("paid_at"))
+                if kept:
+                    detail["milestones_kept_by_performer"] = kept
+                data["milestones"] = [{k: m[k] for k in ("name", "due_at", "pct")} for m in data.get("milestones") or []]
             case Action.MARK_DONE:
                 data["accomplished_at"] = at
             case Action.ASSESS:
@@ -596,7 +747,7 @@ class TaskStore:
             case Action.DECIDE_APPEAL:
                 first = data["assessment"]
                 kept = {k: v for k, v in first.items()
-                        if k not in ("full_sats", "days_late", "pct_off", "earned_sats", "deposit_sats")}
+                        if k not in ("full_sats", "days_late", "pct_off", "earned_sats", "paid_ahead_sats", "deemed")}
                 data["assessment"] = {
                     **kept, "grade": detail["grade"], "sats": detail["sats"], **late_off,
                     "appeal": {
@@ -720,6 +871,9 @@ class TaskStore:
         step(Standing(State(task["state"]), task["final"]), Action.EDIT, roles)
 
         merged = {k: changes.get(k, task.get(k)) for k in EDITABLE}
+        if "cover" not in changes and merged["cover"]:
+            # The stored page carries the stamped terms; they are stamped afresh below.
+            merged["cover"] = {k: v for k, v in merged["cover"].items() if k not in ("terms_version", "terms_hash")}
         needed_by, terms = self._terms(
             task["purchaser"], title=merged["title"], rubric=merged["rubric"], audience=merged["audience"],
             needed_by=merged["needed_by"], description=merged["description"],
@@ -727,7 +881,8 @@ class TaskStore:
             else task["earliest_start"],
             every_days=merged["every_days"], tie_breaker=task["tie_breaker"],
             assessors=[n for n in task["assessors"] if n != task["purchaser"]],
-            signature=signature, late=merged["late"], deposit_pct=merged["deposit_pct"] or 0, at=at,
+            signature=signature, late=merged["late"], deposit_pct=merged["deposit_pct"] or 0,
+            cover=merged["cover"], milestones=merged["milestones"], at=at,
         )
         data = {k: task[k] for k in self._sealed_keys(task)} | terms
         data.pop("nudges", None)
@@ -789,6 +944,9 @@ class TaskStore:
         )}
         data["late"] = task.get("late") or {"kind": "full"}
         data["deposit_pct"] = int(task.get("deposit_pct") or 0)
+        data["cover"] = task.get("cover")
+        data["milestones"] = [{"name": m["name"], "due_at": m["due_at"] + shift, "pct": m["pct"]}
+                              for m in task.get("milestones") or []]
         data["earliest_start"] = task["earliest_start"] + shift if task["earliest_start"] else 0
         data["signatures"] = {"purchaser": task["signatures"]["purchaser"], "performer": ""}
         await self._insert(
@@ -800,42 +958,80 @@ class TaskStore:
             f"UPDATE {self._t('taskbooth_tasks')} SET rolled = 1 WHERE task_id = $1", [task["task_id"]]
         )
 
-    # -- deposits ------------------------------------------------------------
+    # -- paid ahead: the deposit and milestones ------------------------------
 
-    async def _deposit_move(self, npub: str, task_id: str, action: Action) -> dict[str, Any]:
-        """The task, once ``npub`` may make this deposit move on it."""
+    @staticmethod
+    def advance_of(task: dict[str, Any], which: int | None) -> dict[str, Any]:
+        """The deposit (``which`` is None) or milestone ``which`` of a task, as stored."""
+        if which is None:
+            return task.get("deposit") or {}
+        milestones = task.get("milestones") or []
+        if not isinstance(which, int) or isinstance(which, bool) or not 0 <= which < len(milestones):
+            raise ValueError(f"This task has {len(milestones)} milestones, numbered from 0.")
+        return milestones[which]
+
+    @staticmethod
+    def _moves(which: int | None) -> tuple[Action, Action]:
+        return ((Action.DEPOSIT_INVOICE, Action.CONFIRM_DEPOSIT) if which is None
+                else (Action.MILESTONE_INVOICE, Action.CONFIRM_MILESTONE))
+
+    async def _advance_move(
+        self, npub: str, task_id: str, which: int | None, action: Action, at: int,
+    ) -> dict[str, Any]:
+        """The task, once ``npub`` may make this move on its deposit or milestone ``which``."""
         task = await self._load(task_id)
         roles = self._roles(task, npub) if task else frozenset()
         if task is None or not self._may_see(task, roles):
             raise NotYours(f"No task {task_id!r} is yours to see.")
         step(Standing(State(task["state"]), task["final"]), action, roles)
-        if not (task.get("deposit") or {}).get("sats"):
-            raise ValueError("This task asks for no deposit.")
-        if task["deposit"].get("paid_at"):
-            raise ValueError("This task's deposit is already paid.")
+        advance = self.advance_of(task, which)
+        what = "deposit" if which is None else f"milestone {which}"
+        if not advance.get("sats"):
+            raise ValueError("This task asks for no deposit." if which is None
+                             else f"Nothing is due for {what} of this task.")
+        if advance.get("paid_at"):
+            raise ValueError(f"This task's {what} is already paid.")
+        if which is not None and at < int(advance["due_at"]):
+            raise ValueError(f"Milestone {which} ({advance['name']}) falls due at {advance['due_at']} (Unix seconds).")
         return task
 
-    async def deposit_task(self, npub: str, task_id: str) -> dict[str, Any]:
-        """A claimed task whose deposit is still to pay, for the purchaser or the performer asking."""
-        return await self._deposit_move(npub, task_id, Action.DEPOSIT_INVOICE)
-
-    async def save_deposit(self, npub: str, task: dict[str, Any], invoice: dict[str, Any], at: int) -> None:
-        """Keep a checked deposit invoice on the task, with its payment hash, before anyone sees it."""
-        data = {k: task[k] for k in self._sealed_keys(task)}
-        data["deposit"] = {**task["deposit"], **invoice}
-        await self._bump(task, data, at, npub, Action.DEPOSIT_INVOICE,
-                         {"sats": invoice["sats"], "payment_hash": invoice["payment_hash"]})
-
-    async def confirm_deposit(self, npub: str, task_id: str, at: int | None = None) -> dict[str, Any]:
-        """The performer says the deposit arrived. Its invoice must have been made here first."""
+    async def advance_task(self, npub: str, task_id: str, which: int | None = None,
+                           at: int | None = None) -> dict[str, Any]:
+        """A task whose deposit or milestone ``which`` is due and unpaid, for the purchaser or the performer."""
         at = int(time.time()) if at is None else at
-        task = await self._deposit_move(npub, task_id, Action.CONFIRM_DEPOSIT)
-        if not task["deposit"].get("payment_hash"):
-            raise ValueError("No deposit invoice was made for this task, so there is no payment to confirm.")
+        return await self._advance_move(npub, task_id, which, self._moves(which)[0], at)
+
+    async def save_advance(self, npub: str, task: dict[str, Any], which: int | None,
+                           invoice: dict[str, Any], at: int) -> None:
+        """Keep a checked invoice on the deposit or milestone, with its payment hash, before anyone sees it."""
         data = {k: task[k] for k in self._sealed_keys(task)}
-        data["deposit"] = {**task["deposit"], "paid_at": at}
-        await self._bump(task, data, at, npub, Action.CONFIRM_DEPOSIT,
-                         {"sats": task["deposit"]["sats"], "payment_hash": task["deposit"]["payment_hash"]})
+        if which is None:
+            data["deposit"] = {**task["deposit"], **invoice}
+        else:
+            data["milestones"] = [{**m, **invoice} if i == which else m for i, m in enumerate(task["milestones"])]
+        detail = {"sats": invoice["sats"], "payment_hash": invoice["payment_hash"]}
+        if which is not None:
+            detail["milestone"] = which
+        await self._bump(task, data, at, npub, self._moves(which)[0], detail)
+
+    async def confirm_advance(self, npub: str, task_id: str, which: int | None = None,
+                              at: int | None = None) -> dict[str, Any]:
+        """The performer says a deposit or milestone arrived. Its invoice must have been made here first."""
+        at = int(time.time()) if at is None else at
+        task = await self._advance_move(npub, task_id, which, self._moves(which)[1], at)
+        advance = self.advance_of(task, which)
+        if not advance.get("payment_hash"):
+            what = "deposit" if which is None else f"milestone {which}"
+            raise ValueError(f"No {what} invoice was made for this task, so there is no payment to confirm.")
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        if which is None:
+            data["deposit"] = {**advance, "paid_at": at}
+        else:
+            data["milestones"] = [{**m, "paid_at": at} if i == which else m for i, m in enumerate(task["milestones"])]
+        detail = {"sats": advance["sats"], "payment_hash": advance["payment_hash"]}
+        if which is not None:
+            detail["milestone"] = which
+        await self._bump(task, data, at, npub, self._moves(which)[1], detail)
         return await self.get(npub, task_id, at)
 
     # -- payouts -------------------------------------------------------------

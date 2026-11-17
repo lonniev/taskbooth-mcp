@@ -23,6 +23,11 @@ Four things the arrows above leave out:
   The purchaser pays it straight to the performer while the task is claimed,
   and the award later pays only what the grade earns beyond it. It moves no
   state; it is a record on the task.
+- **Milestones**: dated part-payments of the top grade, payable from their
+  date while the work is under way or done. Like the deposit, they move no
+  state, and the award pays only what the grade earns beyond what was paid ahead.
+- **Deemed acceptance**: when the purchaser does not grade in time, this
+  service grades finished work at the cover page's deemed grade.
 - A final assessment worth sats is **Owed** until it is paid. One worth zero
   sats stays Assessed, final, with nothing to pay. That is a finished task, and
   it is different from Rejected.
@@ -99,6 +104,8 @@ class Action(StrEnum):
     NUDGE_DUE = "nudge_due"
     DEPOSIT_INVOICE = "deposit_invoice"
     CONFIRM_DEPOSIT = "confirm_deposit"
+    MILESTONE_INVOICE = "milestone_invoice"
+    CONFIRM_MILESTONE = "confirm_milestone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +142,8 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.POSTED, Action.WITHDRAW): frozenset({Role.PURCHASER}),
     (State.CLAIMED, Action.RELEASE): frozenset({Role.PERFORMER, Role.PURCHASER}),
     (State.CLAIMED, Action.MARK_DONE): frozenset({Role.PERFORMER}),
-    (State.DONE, Action.ASSESS): frozenset({Role.ASSESSOR}),
+    # The operator grades only at the deemed grade, once the purchaser let the time run out.
+    (State.DONE, Action.ASSESS): frozenset({Role.ASSESSOR, Role.OPERATOR}),
     (State.DONE, Action.REJECT): frozenset({Role.ASSESSOR}),
     (State.ASSESSED, Action.ACCEPT): frozenset({Role.PERFORMER}),
     (State.ASSESSED, Action.APPEAL): frozenset({Role.PERFORMER}),
@@ -155,6 +163,11 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.CLAIMED, Action.DEPOSIT_INVOICE): frozenset({Role.PURCHASER, Role.PERFORMER}),
     (State.CLAIMED, Action.CONFIRM_DEPOSIT): frozenset({Role.PERFORMER}),
     (State.DONE, Action.CONFIRM_DEPOSIT): frozenset({Role.PERFORMER}),
+    # A milestone falls due on its date, whether the work is still under way or already done.
+    (State.CLAIMED, Action.MILESTONE_INVOICE): frozenset({Role.PURCHASER, Role.PERFORMER}),
+    (State.DONE, Action.MILESTONE_INVOICE): frozenset({Role.PURCHASER, Role.PERFORMER}),
+    (State.CLAIMED, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
+    (State.DONE, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
 }
 
 
@@ -203,7 +216,8 @@ def step(
             return Standing(State.PAID, final=True)
         case Action.MISS:
             return Standing(State.MISSED, final=True)
-        case Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE | Action.DEPOSIT_INVOICE | Action.CONFIRM_DEPOSIT:
+        case (Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE | Action.DEPOSIT_INVOICE | Action.CONFIRM_DEPOSIT
+              | Action.MILESTONE_INVOICE | Action.CONFIRM_MILESTONE):
             return now
     raise ValueError(f"Unknown action '{action}'.")  # pragma: no cover — the enum is closed
 
@@ -266,7 +280,8 @@ def late_sats(sats: int, pct_per_day: int, days: int) -> int:
     return sats * kept // 100
 
 
-#: The most of a task's top grade a deposit may ask for.
+#: The most of a task's top grade a deposit and its milestones together may ask for,
+#: so something is always left for the grade to decide.
 MAX_DEPOSIT_PCT = 90
 
 

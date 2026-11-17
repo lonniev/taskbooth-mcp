@@ -50,6 +50,13 @@ LEGAL: dict[tuple[State, Action, Role], Standing] = {
     (State.CLAIMED, Action.DEPOSIT_INVOICE, Role.PERFORMER): Standing(State.CLAIMED),
     (State.CLAIMED, Action.CONFIRM_DEPOSIT, Role.PERFORMER): Standing(State.CLAIMED),
     (State.DONE, Action.CONFIRM_DEPOSIT, Role.PERFORMER): Standing(State.DONE),
+    (State.DONE, Action.ASSESS, Role.OPERATOR): Standing(State.ASSESSED),
+    (State.CLAIMED, Action.MILESTONE_INVOICE, Role.PURCHASER): Standing(State.CLAIMED),
+    (State.CLAIMED, Action.MILESTONE_INVOICE, Role.PERFORMER): Standing(State.CLAIMED),
+    (State.DONE, Action.MILESTONE_INVOICE, Role.PURCHASER): Standing(State.DONE),
+    (State.DONE, Action.MILESTONE_INVOICE, Role.PERFORMER): Standing(State.DONE),
+    (State.CLAIMED, Action.CONFIRM_MILESTONE, Role.PERFORMER): Standing(State.CLAIMED),
+    (State.DONE, Action.CONFIRM_MILESTONE, Role.PERFORMER): Standing(State.DONE),
 }
 SOME_SATS = Facts(sats=800)
 
