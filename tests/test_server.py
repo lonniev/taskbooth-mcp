@@ -42,3 +42,12 @@ def test_operator_credentials_are_all_sensitive():
 
 def test_version_is_one_value():
     assert server.mcp.version == __version__
+
+
+def test_the_package_says_the_version_pyproject_releases():
+    # A release bumps pyproject.toml; this keeps the version the service reports from staying behind.
+    import tomllib
+    from pathlib import Path
+
+    released = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())["project"]["version"]
+    assert __version__ == released
