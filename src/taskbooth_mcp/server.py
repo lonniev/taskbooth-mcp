@@ -39,7 +39,7 @@ from tollbooth.tool_identity import (
     ToolIdentity,
 )
 
-from taskbooth_mcp import __version__, feed, payout, price
+from taskbooth_mcp import __version__, feed, payout, price, terms
 from taskbooth_mcp.lifecycle import Action, State
 from taskbooth_mcp.store import NotYours, TaskStore
 
@@ -80,6 +80,13 @@ mcp = FastMCP(
         "claimed. taskbooth_request_deposit returns the invoice, the purchaser pays it, and "
         "the performer calls taskbooth_confirm_deposit. The award then pays only what the "
         "grade earns beyond the deposit.\n\n"
+        "Milestones are dated part-payments of the top grade, payable from their date: "
+        "taskbooth_request_milestone and taskbooth_confirm_milestone work like the deposit's "
+        "tools, by milestone index. A cover page (spec link and hash, deliverables, a deemed "
+        "grade, IP and confidentiality) puts the job under the MakerMarket Standard Terms, "
+        "whose text and hash taskbooth_standard_terms returns. Finished work the purchaser "
+        "leaves ungraded past the cover page's deemed-acceptance period is graded at its "
+        "deemed grade. Every amount is in sats.\n\n"
         "taskbooth_calendar_publish mints a calendar feed of your tasks for a phone's "
         "calendar app; taskbooth_calendar_list and taskbooth_calendar_revoke manage it.\n\n"
         "taskbooth_list_tasks shows every task you have a part in; taskbooth_get_task "
@@ -129,6 +136,9 @@ EDIT_TASK_UUID = "9621461f-699c-4a6d-96c3-7f2c9278a9ba"
 NUDGE_TASK_UUID = "d1a006a3-4b43-447c-82e3-97ca2229651f"
 REQUEST_DEPOSIT_UUID = "771d7242-dcdd-466b-ba61-f9c06d18a547"
 CONFIRM_DEPOSIT_UUID = "118e4115-a77d-4569-9162-e62a81ce6088"
+REQUEST_MILESTONE_UUID = "bc0046f7-0c57-4866-ac2f-9850b3adfcce"
+CONFIRM_MILESTONE_UUID = "04b1d2a2-9280-468b-935c-06c6593c3b60"
+STANDARD_TERMS_UUID = "e9653c73-6503-45af-a0b5-1e336ebe7660"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -176,6 +186,12 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "The Lightning invoice that pays a claimed task's deposit"),
     _identity(CONFIRM_DEPOSIT_UUID, "confirm_deposit", "write", "Confirm the deposit", WRITES,
               "Say the sats for a claimed task's deposit arrived"),
+    _identity(REQUEST_MILESTONE_UUID, "request_milestone", "write", "Request a milestone invoice", WRITES_REMOTE,
+              "The Lightning invoice that pays a task's milestone once it falls due"),
+    _identity(CONFIRM_MILESTONE_UUID, "confirm_milestone", "write", "Confirm a milestone", WRITES,
+              "Say the sats for a task's milestone arrived"),
+    _identity(STANDARD_TERMS_UUID, "standard_terms", "free", "The Standard Terms", READS,
+              "The MakerMarket Standard Terms a cover page puts a job under, with the hash a signature covers"),
     _identity(CONFIRM_PAID_UUID, "confirm_paid", "write", "Confirm payment", WRITES,
               "Say the sats for an owed task arrived"),
     _identity(SAVE_RUBRIC_TEMPLATE_UUID, "save_rubric_template", "write", "Save a rubric template", WRITES,
@@ -299,6 +315,8 @@ async def post_task(
     signature: str = "",
     late: dict[str, Any] | None = None,
     deposit_pct: int = 0,
+    cover: dict[str, Any] | None = None,
+    milestones: list[dict[str, Any]] | None = None,
     npub: PatronNpub = "",
 ) -> dict[str, Any]:
     """Post a task for others (or yourself) to claim.
@@ -324,13 +342,22 @@ async def post_task(
             below zero; {"kind": "cancel"} closes it as missed once needed_by passes undone.
         deposit_pct: The share of the top grade, 0 to 90 percent, paid to the performer when they
             claim it. The award later pays only what the grade earns beyond it. 0 asks for none.
+        cover: A job's cover page, which puts it under the Standard Terms (taskbooth_standard_terms):
+            {"spec_url": "https://…", "spec_hash": "<sha256 hex>", "deliverables": ["…"],
+             "deemed_grade": "<a rubric grade>", "deemed_acceptance_days": 14,
+             "ip_option": "assign" | "license" | "worker_keeps" | "custom", "ip_custom_text": "…",
+             "confidential": false, "client_is_consumer": false, "third_party_allowed": false,
+             "governing_law": "…", "venue": "…"}. Every field is optional. Escrow is not offered yet.
+        milestones: Dated part-payments of the top grade, up to 6:
+            [{"name": "Halfway", "due_at": <Unix seconds>, "pct": 45}]. With deposit_pct they ask for
+            at most 90%. Each is payable from its date, and the award pays only what is left.
     """
     db = await store()
     task_id = await db.post(
         runtime.resolve_npub(npub), title=title, rubric=rubric, audience=audience, needed_by=needed_by,
         description=description, earliest_start=earliest_start, every_days=every_days,
         tie_breaker=tie_breaker, assessors=assessors, org_id=org_id, project_id=project_id,
-        purchaser_signature=signature, late=late, deposit_pct=deposit_pct,
+        purchaser_signature=signature, late=late, deposit_pct=deposit_pct, cover=cover, milestones=milestones,
     )
     return {"ok": True, "task": await db.get(runtime.resolve_npub(npub), task_id)}
 
@@ -347,6 +374,8 @@ async def edit_task(
     every_days: int | None = None,
     late: dict[str, Any] | None = None,
     deposit_pct: int | None = None,
+    cover: dict[str, Any] | None = None,
+    milestones: list[dict[str, Any]] | None = None,
     signature: str = "",
     npub: PatronNpub = "",
 ) -> dict[str, Any]:
@@ -358,11 +387,13 @@ async def edit_task(
 
     Args:
         task_id: The task.
-        title, description, rubric, audience, needed_by, every_days, late, deposit_pct: As in post_task.
+        title, description, rubric, audience, needed_by, every_days, late, deposit_pct, cover, milestones:
+            As in post_task.
         signature: Your signature on the changed offer, when your client makes one.
     """
     given = {"title": title, "description": description, "rubric": rubric, "audience": audience,
-             "needed_by": needed_by, "every_days": every_days, "late": late, "deposit_pct": deposit_pct}
+             "needed_by": needed_by, "every_days": every_days, "late": late, "deposit_pct": deposit_pct,
+             "cover": cover, "milestones": milestones}
     changes = {k: v for k, v in given.items() if v is not None}
     db = await store()
     task = await _do(db.edit(runtime.resolve_npub(npub), str(task_id), changes, signature=signature))
@@ -627,13 +658,16 @@ async def request_deposit(task_id: str, invoice: str = "", npub: PatronNpub = ""
         invoice: The performer's own BOLT11 invoice for exactly the deposit. Only the performer passes one.
     """
     me = runtime.resolve_npub(npub)
+    return {"ok": True, "deposit": await _advance_invoice(me, task_id, None, invoice)}
+
+
+async def _advance_invoice(me: str, task_id: str, which: int | None, invoice: str) -> dict[str, Any]:
     db = await store()
-    task = await _do(db.deposit_task(me, str(task_id)))
+    task = await _do(db.advance_task(me, str(task_id), which))
     if invoice and me != task["performer"]:
         raise ValueError("Only the performer may hand in their own invoice.")
     address = "" if invoice else await payout_address_of(task["performer"])
-    made = await payout.deposit_invoice(db, task, address=address, invoice=invoice, requested_by=me)
-    return {"ok": True, "deposit": made}
+    return await payout.advance_invoice(db, task, which, address=address, invoice=invoice, requested_by=me)
 
 
 @tool
@@ -645,8 +679,53 @@ async def confirm_deposit(task_id: str, npub: PatronNpub = "") -> dict[str, Any]
         task_id: A claimed or done task you perform.
     """
     db = await store()
-    task = await _do(db.confirm_deposit(runtime.resolve_npub(npub), str(task_id)))
+    task = await _do(db.confirm_advance(runtime.resolve_npub(npub), str(task_id)))
     return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(REQUEST_MILESTONE_UUID)
+async def request_milestone(task_id: str, index: int, invoice: str = "", npub: PatronNpub = "") -> dict[str, Any]:
+    """The Lightning invoice that pays one of a task's milestones, for exactly its sats, once it falls due.
+
+    It works like taskbooth_request_deposit: the purchaser pays it from any wallet,
+    the sats go straight to the performer, and asking again returns the same
+    invoice until it expires. The performer calls taskbooth_confirm_milestone once
+    the sats arrive.
+
+    Args:
+        task_id: A claimed or done task you posted or perform.
+        index: Which milestone, counting from 0 in the task's milestones list.
+        invoice: The performer's own BOLT11 invoice for exactly the milestone. Only the performer passes one.
+    """
+    me = runtime.resolve_npub(npub)
+    return {"ok": True, "milestone": await _advance_invoice(me, task_id, index, invoice)}
+
+
+@tool
+@runtime.paid_tool(CONFIRM_MILESTONE_UUID)
+async def confirm_milestone(task_id: str, index: int, npub: PatronNpub = "") -> dict[str, Any]:
+    """Say a milestone's sats arrived. Only the performer, for a milestone invoiced here.
+
+    Args:
+        task_id: A claimed or done task you perform.
+        index: Which milestone, counting from 0.
+    """
+    db = await store()
+    task = await _do(db.confirm_advance(runtime.resolve_npub(npub), str(task_id), index))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(STANDARD_TERMS_UUID)
+async def standard_terms(version: str = "") -> dict[str, Any]:
+    """The MakerMarket Standard Terms: their text, and the sha256 a cover page and a signature name.
+
+    Args:
+        version: A version such as "v0". Empty for the current one.
+    """
+    return {"ok": True, "version": version or terms.CURRENT, "hash": terms.terms_hash(version),
+            "text": terms.text(version), "versions": sorted(terms.VERSIONS)}
 
 
 # ---------------------------------------------------------------------------

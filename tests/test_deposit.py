@@ -92,7 +92,7 @@ async def test_the_award_pays_only_what_the_grade_earns_beyond_a_paid_deposit(bi
     await call("mark_done", task_id=task, npub=CHILD)
     graded = (await call("assess_task", task_id=task, grade="Spotless", npub=PARENT))["task"]
     assert graded["state"] == "owed"
-    assert graded["assessment"] | {"sats": 1500, "earned_sats": 2000, "deposit_sats": 500} == graded["assessment"]
+    assert graded["assessment"] | {"sats": 1500, "earned_sats": 2000, "paid_ahead_sats": 500} == graded["assessment"]
     due = (await call("request_payout", task_id=task, npub=PARENT))["payout"]
     assert due["sats"] == 1500 and bolt11.decode(due["invoice"]).amount_msat == 1_500_000
 
@@ -112,7 +112,7 @@ async def test_an_unpaid_deposit_leaves_the_award_whole(billing, queue, wallets)
     await call("request_deposit", task_id=task, npub=PARENT)
     await call("mark_done", task_id=task, npub=CHILD)
     graded = (await call("assess_task", task_id=task, grade="Spotless", npub=PARENT))["task"]
-    assert graded["assessment"]["sats"] == 2000 and "deposit_sats" not in graded["assessment"]
+    assert graded["assessment"]["sats"] == 2000 and "paid_ahead_sats" not in graded["assessment"]
 
 
 async def test_a_deposit_confirmed_after_the_work_is_done_still_counts(billing, queue, wallets):
