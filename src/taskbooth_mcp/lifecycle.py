@@ -106,6 +106,7 @@ class Action(StrEnum):
     CONFIRM_DEPOSIT = "confirm_deposit"
     MILESTONE_INVOICE = "milestone_invoice"
     CONFIRM_MILESTONE = "confirm_milestone"
+    SIGN = "sign"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +169,9 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.DONE, Action.MILESTONE_INVOICE): frozenset({Role.PURCHASER, Role.PERFORMER}),
     (State.CLAIMED, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
     (State.DONE, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
+    # The purchaser signs the offer while it is open; the performer signs the same offer once claimed.
+    (State.POSTED, Action.SIGN): frozenset({Role.PURCHASER}),
+    (State.CLAIMED, Action.SIGN): frozenset({Role.PERFORMER}),
 }
 
 
@@ -217,7 +221,7 @@ def step(
         case Action.MISS:
             return Standing(State.MISSED, final=True)
         case (Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE | Action.DEPOSIT_INVOICE | Action.CONFIRM_DEPOSIT
-              | Action.MILESTONE_INVOICE | Action.CONFIRM_MILESTONE):
+              | Action.MILESTONE_INVOICE | Action.CONFIRM_MILESTONE | Action.SIGN):
             return now
     raise ValueError(f"Unknown action '{action}'.")  # pragma: no cover — the enum is closed
 
