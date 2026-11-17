@@ -1,2 +1,0 @@
-- A performer no longer needs a `payout_address` to claim a task.
-- `taskbooth_request_payout` takes the performer's own invoice: a performer with no Lightning address makes one for exactly the sats owed in any wallet and passes it as `invoice`. It is checked for amount and expiry, and its payment hash recorded, like a fetched one.
