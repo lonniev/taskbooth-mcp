@@ -149,6 +149,14 @@ OFFER_TERMS_UUID = "ede94cef-da9f-43c8-818d-0cccffdfb9fe"
 SIGN_OFFER_UUID = "ebb9aa17-2ab9-4e30-b19a-2adae5524231"
 REQUEST_OFFER_SIGNATURE_UUID = "28ed89a0-b1c5-45cd-a77b-de8ef919d391"
 RECEIVE_OFFER_SIGNATURE_UUID = "599ac87b-fa6d-405d-8509-280b30bdd49c"
+SAVE_ORGANIZATION_UUID = "0ac80c75-0f6f-4103-a124-04aa2fde8880"
+LIST_ORGANIZATIONS_UUID = "79afc839-9b86-4796-9add-d64873bff833"
+GET_ORGANIZATION_UUID = "826274a4-cb23-4c5b-8b52-968feaa2dd7b"
+SAVE_MEMBER_UUID = "cd661183-58c4-4627-8946-0f0bc9f83901"
+REMOVE_MEMBER_UUID = "0743b2af-ef8e-449d-90b1-d70f2c665b4b"
+SAVE_PROJECT_UUID = "35b7db5c-db49-46d5-a2a2-b3e80c261fb0"
+ARCHIVE_PROJECT_UUID = "da662acd-f718-4308-b006-c64faf3bdf18"
+GET_PROJECT_UUID = "49b3fa09-53cd-48d5-a5cb-90185427663d"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -201,7 +209,7 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
     _identity(CONFIRM_MILESTONE_UUID, "confirm_milestone", "write", "Confirm a milestone", WRITES,
               "Say the sats for a task's milestone arrived"),
     _identity(STANDARD_TERMS_UUID, "standard_terms", "free", "The Standard Terms", READS,
-              "The MakerMarket Standard Terms a cover page puts a job under, with the hash a signature covers"),
+              "The Standard Terms a cover page puts a job under, with the hash a signature covers"),
     _identity(OFFER_TERMS_UUID, "offer_terms", "read", "Read the offer to sign", READS,
               "A task's terms as the one statement both parties sign, its hash, and who has signed"),
     _identity(SIGN_OFFER_UUID, "sign_offer", "write", "Sign the offer", WRITES,
@@ -224,6 +232,22 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "The calendar feeds the caller keeps, and how often each is read"),
     _identity(CALENDAR_REVOKE_UUID, "calendar_revoke", "write", "Revoke a calendar feed", DELETES,
               "Stop a calendar feed so its token opens nothing"),
+    _identity(SAVE_ORGANIZATION_UUID, "save_organization", "write", "Save an Organization", CREATES,
+              "Make an Organization to file tasks under, or rename one you own"),
+    _identity(LIST_ORGANIZATIONS_UUID, "list_organizations", "read", "List Organizations", READS,
+              "The Organizations you own or belong to"),
+    _identity(GET_ORGANIZATION_UUID, "get_organization", "read", "Get an Organization", READS,
+              "An Organization with its members and Projects"),
+    _identity(SAVE_MEMBER_UUID, "save_member", "write", "Add a member", WRITES,
+              "Add an npub to your Organization, or change their label"),
+    _identity(REMOVE_MEMBER_UUID, "remove_member", "write", "Remove a member", DELETES,
+              "Take an npub out of your Organization"),
+    _identity(SAVE_PROJECT_UUID, "save_project", "write", "Save a Project", CREATES,
+              "Make a Project in your Organization, or change its brief, budget, circle and default terms"),
+    _identity(ARCHIVE_PROJECT_UUID, "archive_project", "write", "Archive a Project", WRITES,
+              "Close a Project to new tasks, or open it again"),
+    _identity(GET_PROJECT_UUID, "get_project", "read", "Get a Project", READS,
+              "A Project with what its tasks have committed and paid"),
     _identity(BTC_PRICE_UUID, "btc_price", "free", "Bitcoin's price", READS_REMOTE,
               "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
 ]
@@ -352,8 +376,9 @@ async def post_task(
         every_days: Repeat every this many days (7 for weekly). 0 for a one-off.
         tie_breaker: The npub who decides an appeal. Omitted, it is you.
         assessors: Other npubs who may grade it for you.
-        org_id: Your Purser Organization, if this is its work.
-        project_id: The Purser Project it belongs to.
+        org_id: The Organization this is filed under (taskbooth_list_organizations). Give it with
+            project_id, or neither. You must own or belong to it.
+        project_id: The Project in that Organization it belongs to. An archived Project takes none.
         signature: Your signature on the offer, when your client makes one.
         late: What happens if it is done after needed_by. {"kind": "full"} pays in full (the default);
             {"kind": "discount", "pct_per_day": 10} takes 10% off the grade for each day late, never
@@ -439,7 +464,8 @@ async def nudge_task(task_id: str, kind: str, npub: PatronNpub = "") -> dict[str
 @tool
 @runtime.paid_tool(LIST_TASKS_UUID)
 async def list_tasks(npub: PatronNpub = "") -> dict[str, Any]:
-    """Every task you posted, perform, grade, or may claim; soonest needed first."""
+    """Every task you posted, perform, grade, or may claim, and every task filed in your Organizations'
+    Projects; soonest needed first. Each task's org_id and project_id say where it is filed."""
     return {"ok": True, "tasks": await (await store()).tasks_of(runtime.resolve_npub(npub))}
 
 
@@ -857,6 +883,145 @@ async def list_rubric_templates(npub: PatronNpub = "") -> dict[str, Any]:
     """The rubrics you have kept."""
     return {"ok": True, "templates": await (await store()).templates_of(runtime.resolve_npub(npub))}
 
+
+
+# ---------------------------------------------------------------------------
+# Organizations and Projects
+# ---------------------------------------------------------------------------
+
+
+@tool
+@runtime.paid_tool(SAVE_ORGANIZATION_UUID)
+async def save_organization(name: str, about: str = "", org_id: str = "", npub: PatronNpub = "") -> dict[str, Any]:
+    """Make an Organization to file tasks under, or change one you own.
+
+    Its members see its Projects and every task filed in them, and may post
+    tasks into them. Only you, its owner, change it, its members or its Projects.
+
+    Args:
+        name: What it is called, e.g. "The New Library".
+        about: A sentence or two about it.
+        org_id: One of yours to change. Omit to make a new one.
+    """
+    db = await store()
+    saved = await _do(db.save_org(runtime.resolve_npub(npub), name, about, str(org_id)))
+    return {"ok": True, "org_id": saved}
+
+
+@tool
+@runtime.paid_tool(LIST_ORGANIZATIONS_UUID)
+async def list_organizations(npub: PatronNpub = "") -> dict[str, Any]:
+    """The Organizations you own or belong to, each with your place in it: "owner" or "member"."""
+    return {"ok": True, "organizations": await (await store()).orgs_of(runtime.resolve_npub(npub))}
+
+
+@tool
+@runtime.paid_tool(GET_ORGANIZATION_UUID)
+async def get_organization(org_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """An Organization you own or belong to, with its members and its Projects.
+
+    Args:
+        org_id: The Organization.
+    """
+    db = await store()
+    return {"ok": True, "organization": await _do(db.org(runtime.resolve_npub(npub), str(org_id)))}
+
+
+@tool
+@runtime.paid_tool(SAVE_MEMBER_UUID)
+async def save_member(org_id: str, member: str, label: str = "", npub: PatronNpub = "") -> dict[str, Any]:
+    """Add an npub to an Organization you own, or change their label.
+
+    Args:
+        org_id: Your Organization.
+        member: The npub to add.
+        label: What to call them, e.g. "Head librarian".
+    """
+    db = await store()
+    await _do(db.save_member(runtime.resolve_npub(npub), str(org_id), member, label))
+    return {"ok": True}
+
+
+@tool
+@runtime.paid_tool(REMOVE_MEMBER_UUID)
+async def remove_member(org_id: str, member: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Take an npub out of an Organization you own. They stop seeing it and its tasks at once.
+
+    Tasks they posted stay theirs.
+
+    Args:
+        org_id: Your Organization.
+        member: The npub to take out.
+    """
+    db = await store()
+    if not await _do(db.remove_member(runtime.resolve_npub(npub), str(org_id), str(member))):
+        raise ValueError("That npub is not a member of the Organization.")
+    return {"ok": True}
+
+
+@tool
+@runtime.paid_tool(SAVE_PROJECT_UUID)
+async def save_project(
+    org_id: str,
+    name: str,
+    brief: str = "",
+    budget_sats: int = 0,
+    circle: list[str] | None = None,
+    defaults: dict[str, Any] | None = None,
+    project_id: str = "",
+    npub: PatronNpub = "",
+) -> dict[str, Any]:
+    """Make a Project in an Organization you own, or change one. Give every field when changing it.
+
+    A Project suggests what a new task in it starts from; the site fills a new
+    task's form from these, and nothing is applied to a task you did not post.
+
+    Args:
+        org_id: Your Organization.
+        name: What the Project is called, e.g. "Portraits for the reading room".
+        brief: What the Project is for.
+        budget_sats: What it may spend in all, in sats. 0 for no budget.
+        circle: The npubs invited to each new task in it.
+        defaults: Default cover terms: {"deemed_acceptance_days": 14, "ip_option": "assign" | "license" |
+            "worker_keeps" | "custom", "ip_custom_text": "…", "confidential": false, "client_is_consumer": false,
+            "third_party_allowed": false, "governing_law": "…", "venue": "…"}. Every field is optional.
+        project_id: One of the Organization's Projects to change. Omit to make a new one.
+    """
+    db = await store()
+    saved = await _do(db.save_project(runtime.resolve_npub(npub), str(org_id), name, brief, budget_sats,
+                                      circle, defaults, str(project_id)))
+    return {"ok": True, "project_id": saved}
+
+
+@tool
+@runtime.paid_tool(ARCHIVE_PROJECT_UUID)
+async def archive_project(org_id: str, project_id: str, archived: bool = True, npub: PatronNpub = "") -> dict[str, Any]:
+    """Close a Project in an Organization you own to new tasks, or open it again. Its tasks go on as they are.
+
+    Args:
+        org_id: Your Organization.
+        project_id: The Project.
+        archived: True to close it, false to open it again.
+    """
+    db = await store()
+    await _do(db.archive_project(runtime.resolve_npub(npub), str(org_id), str(project_id), archived))
+    return {"ok": True}
+
+
+@tool
+@runtime.paid_tool(GET_PROJECT_UUID)
+async def get_project(project_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """A Project in an Organization you own or belong to, with what its tasks have committed and paid.
+
+    totals.committed_sats: the top grade of each task still open or under way, what each graded task
+    earned, and what was paid ahead on any that closed ungraded. totals.paid_sats: what the performers
+    confirmed arrived. totals.by_standing counts its tasks by where they stand.
+
+    Args:
+        project_id: The Project.
+    """
+    db = await store()
+    return {"ok": True, "project": await _do(db.project(runtime.resolve_npub(npub), str(project_id)))}
 
 
 # ---------------------------------------------------------------------------

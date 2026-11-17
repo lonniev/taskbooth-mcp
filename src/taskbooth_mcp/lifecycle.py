@@ -84,6 +84,7 @@ class Role(StrEnum):
     ASSESSOR = "assessor"        # the purchaser, or someone they delegated grading to
     TIE_BREAKER = "tie_breaker"  # named in the rubric; decides an appeal
     OPERATOR = "operator"        # this service: recording a proved payment, closing a missed task
+    MEMBER = "member"            # in the Organization the task is filed under: sees it, moves nothing
 
 
 class Action(StrEnum):
