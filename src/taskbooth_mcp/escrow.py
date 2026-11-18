@@ -107,6 +107,37 @@ def _pending(stored: dict[str, Any]) -> cashu.Pending:
     return cashu.Pending(outputs=stored["outputs"], secrets=stored["secrets"], rs=stored["rs"])
 
 
+def parts(kind: str, inputs: list[dict[str, Any]], outputs: list[dict[str, Any]], quote: str = "") -> dict[str, Any]:
+    """What a signer's client rebuilds the message from, to check it before signing.
+
+    ``kind`` is ``mint_quote`` (NUT-20), ``swap`` or ``melt`` (NUT-11 SIG_ALL). A
+    client hashes its own rebuild, never a digest it is handed, so a key that
+    signs here can sign nothing but a Cashu message. The inputs are proofs
+    locked to the signer, so showing them gives away nothing they could not
+    already spend.
+    """
+    return {
+        "kind": kind,
+        "inputs": [{"amount": int(p["amount"]), "secret": p["secret"], "C": p["C"]} for p in inputs],
+        "outputs": [{"amount": int(o["amount"]), "B_": o["B_"]} for o in outputs],
+        "quote": quote,
+    }
+
+
+def _funding_parts(record: dict[str, Any]) -> dict[str, Any]:
+    funding = record["funding"]
+    return parts("mint_quote", [], funding["pending"]["outputs"], funding["quote"])
+
+
+def _proposal_parts(record: dict[str, Any]) -> dict[str, Any]:
+    return parts("swap", record["proofs"], record["proposal"]["pending"]["outputs"])
+
+
+def _collect_parts(record: dict[str, Any], role: str) -> dict[str, Any]:
+    pending = record["collect"][role]
+    return parts("melt", record["groups"][role], pending["pending"]["outputs"], pending["quote"])
+
+
 def roles_in(record: dict[str, Any], npub: str) -> list[str]:
     return [role for role in PARTIES if record["parties"].get(role) == npub]
 
@@ -146,16 +177,19 @@ def _pending_for(record: dict[str, Any], npub: str) -> list[dict[str, Any]]:
         pending = (record.get("collect") or {}).get(role)
         if pending:
             out.append({"what": "collect", "role": role, "sats": pending["amount"],
-                        "fee_reserve": pending["fee_reserve"], "sign_digest": digest(pending["message"])})
+                        "fee_reserve": pending["fee_reserve"], "sign_digest": digest(pending["message"]),
+                        "parts": _collect_parts(record, role)})
     if record["state"] == INVOICED and "purchaser" in mine:
         out.append({"what": "fund", "role": "purchaser", "sats": record["sats"],
-                     "sign_digest": digest(bytes.fromhex(record["funding"]["message_hex"]))})
+                     "sign_digest": digest(bytes.fromhex(record["funding"]["message_hex"])),
+                     "parts": _funding_parts(record)})
     proposal = record.get("proposal")
     if record["state"] == PROPOSED and proposal:
         for role in mine:
             if role not in proposal["signatures"]:
                 out.append({"what": "proposal", "role": role, "to_performer": proposal["to_performer"],
-                            "to_purchaser": proposal["to_purchaser"], "sign_digest": digest(proposal["message"])})
+                            "to_purchaser": proposal["to_purchaser"], "sign_digest": digest(proposal["message"]),
+                            "parts": _proposal_parts(record)})
     return out
 
 
@@ -242,7 +276,7 @@ def _handed(record: dict[str, Any]) -> dict[str, Any]:
     funding = record["funding"]
     return {"invoice": funding["invoice"], "sats": record["sats"], "expires_at": funding["expires_at"],
             "mint": record["mint"], "refund_at": record["locktime"],
-            "sign_digest": digest(bytes.fromhex(funding["message_hex"]))}
+            "sign_digest": digest(bytes.fromhex(funding["message_hex"])), "parts": _funding_parts(record)}
 
 
 async def propose(db: Any, npub: str, task_id: str, to_performer: int | None, at: int) -> dict[str, Any]:
@@ -279,6 +313,7 @@ async def propose(db: Any, npub: str, task_id: str, to_performer: int | None, at
     await db.save_escrow(task, record, actor=npub, action=Action.ESCROW_PROPOSE,
                          detail={"to_performer": to_performer, "to_purchaser": net - to_performer}, at=at)
     return {"proposal": escrow_summary(record, at)["proposal"], "sign_digest": digest(message),
+            "parts": _proposal_parts(record),
             "needs": "two of purchaser, performer and arbiter; or the purchaser alone after the refund date "
                      "for a full refund"}
 
@@ -328,7 +363,8 @@ async def collect(db: Any, mint_for: MintFor, invoice_for: InvoiceFor, npub: str
     }}}
     await db.save_escrow(task, record, actor=npub, action=Action.ESCROW_COLLECT,
                          detail={"role": role, "sats": amount, "fee_reserve": reserve}, at=at)
-    return {"sats": amount, "fee_reserve": reserve, "address": address, "sign_digest": digest(message)}
+    return {"sats": amount, "fee_reserve": reserve, "address": address, "sign_digest": digest(message),
+            "parts": _collect_parts(record, role)}
 
 
 async def sign(db: Any, mint_for: MintFor, npub: str, task_id: str, signature: str, at: int) -> dict[str, Any]:
