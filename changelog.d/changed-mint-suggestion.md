@@ -1,0 +1,1 @@
+- The Escrow mints setting suggests `https://testnut.cashu.space`, shown as an example in the empty field, and says it is a test mint whose sats are not real.

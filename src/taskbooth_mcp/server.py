@@ -281,7 +281,9 @@ PATRON_PROPERTIES: dict[str, PropertySpec] = {
 OPERATOR_PROPERTIES: dict[str, PropertySpec] = {
     "escrow_mints": PropertySpec(
         kind="text", default=None, label="Escrow mints",
-        description="The Cashu mints offered for escrow: https addresses separated by spaces. Empty offers none.",
+        description="The Cashu mints offered for escrow: https addresses separated by spaces. Empty offers none. "
+                    "testnut.cashu.space is a test mint whose sats are not real: use it only to try escrow out.",
+        suggestions=("https://testnut.cashu.space",),
     ),
 }
 

@@ -67,3 +67,9 @@ async def test_the_escrow_tools_are_registered_with_their_own_ids():
     assert {"escrow_invoice", "escrow_status", "escrow_propose", "escrow_collect", "escrow_sign"} <= names
     ids = [t.tool_id for t in server._DOMAIN_TOOLS]
     assert len(ids) == len(set(ids))
+
+
+async def test_the_mint_property_suggests_the_test_mint_and_says_its_sats_are_not_real():
+    spec = server.OPERATOR_PROPERTIES["escrow_mints"].describe()
+    assert spec["suggestions"] == ["https://testnut.cashu.space"] and spec["default"] is None
+    assert "not real" in spec["description"]
