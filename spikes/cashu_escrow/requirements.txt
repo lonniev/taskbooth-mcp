@@ -1,0 +1,2 @@
+cashu==0.20.2
+marshmallow<4
