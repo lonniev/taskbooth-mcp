@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.4.3] — 2026-11-18
+
+### Changed
+
+- The Escrow mints setting suggests `https://testnut.cashu.space`, shown as an example in the empty field, and says it is a test mint whose sats are not real.
+
 ## [0.4.2] — 2026-11-18
 
 ### Added
