@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.4.4] — 2026-11-18
+
+### Added
+
+- Every escrow item to sign now carries `parts`: the inputs, outputs and quote its message is built from, so a signer's client rebuilds and checks the message itself instead of signing a digest it is handed.
+
 ## [0.4.3] — 2026-11-18
 
 ### Changed
