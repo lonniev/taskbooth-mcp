@@ -319,3 +319,55 @@ async def test_only_the_people_on_the_job_reach_its_escrow(queue, family, keys, 
     seen = await escrow.status(db, family["arbiter"], task, NOW + 60)
     assert seen["escrow"]["state"] == "funded" and seen["for_you"] == []
     assert Role.ARBITER in db._roles(await db._load(task), family["arbiter"])
+
+
+async def test_a_grade_not_appealed_within_7_days_stands(queue, family, keys, mint):
+    """Terms 4.6: the performer may appeal a grade once, within 7 days of it; after that it is accepted."""
+    _, db = queue
+    task = await _funded(db, keys, family, mint)
+    await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 40)
+    graded_at = NOW + 50
+    await db.act(family["parent"], task, Action.ASSESS, grade="Tidy", at=graded_at)
+    ends = graded_at + 7 * DAY
+    # The service may not accept for the performer while the days to appeal are still running.
+    with pytest.raises(ValueError, match="only when the days to appeal"):
+        await db.act(family["child"], task, Action.ACCEPT, as_operator=True, at=ends - 1)
+    assert (await db.get(family["child"], task, at=ends))["state"] == "assessed"
+    with pytest.raises(ValueError, match="7 days to appeal this grade have passed"):
+        await db.act(family["child"], task, Action.APPEAL, reasons="Too low", at=ends + 1)
+    seen = await db.get(family["child"], task, at=ends + 2)
+    assert seen["state"] == "owed" and seen["final"]
+
+
+async def test_a_reader_after_the_deadline_finds_the_grade_accepted(queue, family, keys, mint):
+    _, db = queue
+    task = await _funded(db, keys, family, mint)
+    await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 40)
+    await db.act(family["parent"], task, Action.ASSESS, grade="Tidy", at=NOW + 50)
+    listed = {t["task_id"]: t for t in await db.tasks_of(family["parent"], at=NOW + 50 + 8 * DAY)}
+    assert listed[task]["state"] == "owed" and listed[task]["final"]
+    events = await db.events(family["parent"], task)
+    assert events[-1]["action"] == "accept"
+
+
+async def test_an_appeal_inside_the_window_still_goes_to_the_arbiter(queue, family, keys, mint):
+    _, db = queue
+    task = await _funded(db, keys, family, mint)
+    await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 40)
+    await db.act(family["parent"], task, Action.ASSESS, grade="Tidy", at=NOW + 50)
+    appealed = await db.act(family["child"], task, Action.APPEAL, reasons="Spotless, look again",
+                            at=NOW + 50 + 7 * DAY - 1)
+    assert appealed["state"] == "appealed"
+    # An appeal waiting on the arbiter does not lapse.
+    assert (await db.get(family["child"], task, at=NOW + 50 + 30 * DAY))["state"] == "appealed"
+
+
+async def test_a_task_without_a_cover_page_keeps_no_appeal_clock(queue, family):
+    """Chores outside the Standard Terms (ChipIn) have no 7-day rule."""
+    _, db = queue
+    task = await _post(db, family, audience=[family["child"]], tie_breaker=family["arbiter"])
+    await db.act(family["child"], task, Action.CLAIM, at=NOW + 10)
+    await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 20)
+    await db.act(family["parent"], task, Action.ASSESS, grade="Tidy", at=NOW + 30)
+    late = await db.act(family["child"], task, Action.APPEAL, reasons="Fair is fair", at=NOW + 30 + 60 * DAY)
+    assert late["state"] == "appealed"
