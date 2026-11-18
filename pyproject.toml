@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "taskbooth-mcp"
-version = "0.4.0"
+version = "0.4.1"
 description = "Task Booth — a Tollbooth DPYC Operator where work is posted with a signed rubric and paid in sats after it is graded"
 readme = "README.md"
 license = "Apache-2.0"
