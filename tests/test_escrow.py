@@ -8,7 +8,7 @@ from pynostr.key import PrivateKey
 
 from taskbooth_mcp import escrow
 from taskbooth_mcp.lifecycle import Action, Role
-from taskbooth_mcp.store import NotYours, checked_cover
+from taskbooth_mcp.store import NotYours, checked_cover, least_refund_days
 from tests.fake_mint import MINT_URL, FakeMint, sign_digest
 from tests.invoices import make_invoice
 from tests.signing import agree
@@ -37,7 +37,7 @@ def mint():
 
 def cover(family, **over):
     return {"spec_hash": SPEC_HASH, "deemed_grade": "Tidy", "deemed_acceptance_days": 3,
-            "arbiter_npub": family["arbiter"], "escrow": True, "escrow_mint": MINT_URL, "refund_days": 7} | over
+            "arbiter_npub": family["arbiter"], "escrow": True, "escrow_mint": MINT_URL, "refund_days": 24} | over
 
 
 async def _job(db, family, **over):
@@ -79,7 +79,7 @@ def _sign_pending(keys, role_key, view):
 
 def test_escrow_needs_an_arbiter_and_an_offered_mint(family):
     page = checked_cover(cover(family), RUBRIC, purchaser=family["parent"], mints=MINTS)
-    assert page["escrow"] and page["escrow_mint"] == MINT_URL and page["refund_days"] == 7
+    assert page["escrow"] and page["escrow_mint"] == MINT_URL and page["refund_days"] == 24
     with pytest.raises(ValueError, match="needs a named arbiter"):
         checked_cover(cover(family, arbiter_npub=""), RUBRIC, purchaser=family["parent"], mints=MINTS)
     with pytest.raises(ValueError, match="offers no escrow mint"):
@@ -98,6 +98,21 @@ def test_escrow_needs_an_arbiter_and_an_offered_mint(family):
     plain = checked_cover(cover(family, escrow=False, escrow_mint="", refund_days=0), RUBRIC,
                           purchaser=family["parent"], mints=())
     assert plain["arbiter_npub"] == family["arbiter"] and not plain["escrow"]
+
+
+def test_the_refund_date_falls_after_any_appeal_could_be_settled(family):
+    """Terms 6.6 let the client alone take the escrow back from the refund date, so it must not cut an appeal short."""
+    parent = family["parent"]
+    # 7 days' grace + the deemed-acceptance period + 7 to appeal + 7 for the arbiter.
+    assert least_refund_days(3) == 24 and least_refund_days(7) == 28
+    with pytest.raises(ValueError, match="at least 24 days"):
+        checked_cover(cover(family, refund_days=23), RUBRIC, purchaser=parent, mints=MINTS)
+    assert checked_cover(cover(family, refund_days=24), RUBRIC, purchaser=parent, mints=MINTS)["refund_days"] == 24
+    with pytest.raises(ValueError, match="at least 31 days"):
+        checked_cover(cover(family, deemed_acceptance_days=10, refund_days=24), RUBRIC, purchaser=parent, mints=MINTS)
+    # A client who never has to grade could sit on the escrow until the refund date.
+    with pytest.raises(ValueError, match="needs a deemed grade"):
+        checked_cover(cover(family, deemed_grade="", deemed_acceptance_days=0), RUBRIC, purchaser=parent, mints=MINTS)
 
 
 async def test_the_arbiter_decides_appeals_signs_the_offer_and_sees_the_job(queue, family, keys):
@@ -147,7 +162,7 @@ async def test_the_purchaser_funds_the_balance_by_invoice_and_signature(queue, f
     with pytest.raises(ValueError, match="Only the purchaser"):
         await escrow.open_invoice(db, lambda url: mint, family["child"], task, NOW + 20)
     bill = await escrow.open_invoice(db, lambda url: mint, family["parent"], task, NOW + 20)
-    assert bill["sats"] == BALANCE and bill["mint"] == MINT_URL and bill["refund_at"] == NOW + 2 * DAY + 7 * DAY
+    assert bill["sats"] == BALANCE and bill["mint"] == MINT_URL and bill["refund_at"] == NOW + 2 * DAY + 24 * DAY
     again = await escrow.open_invoice(db, lambda url: mint, family["parent"], task, NOW + 25)
     assert again["invoice"] == bill["invoice"]  # the same invoice until it expires
     quote = next(iter(mint.quotes))
@@ -265,7 +280,7 @@ async def test_after_the_refund_date_the_purchaser_alone_takes_it_back(queue, fa
     _, db = queue
     task = await _funded(db, keys, family, mint)
     mint_for = lambda url: mint
-    refund_at = NOW + 2 * DAY + 7 * DAY
+    refund_at = NOW + 2 * DAY + 24 * DAY
     back = await escrow.propose(db, family["parent"], task, 0, NOW + 60)
     early = await escrow.sign(db, mint_for, family["parent"], task, _sign_pending(keys, "parent", back), NOW + 61)
     assert not early["split"]  # before the date one signature is not enough

@@ -441,10 +441,12 @@ async def post_task(
              "ip_option": "assign" | "license" | "worker_keeps" | "custom", "ip_custom_text": "…",
              "confidential": false, "client_is_consumer": false, "third_party_allowed": false,
              "governing_law": "…", "venue": "…",
-             "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 14}.
+             "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 35}.
             Every field is optional. A named arbiter signs the offer and decides any appeal. Escrow holds the
             Balance at a mint this Operator offers (taskbooth_get_operator_properties, escrow_mints); it needs
-            an arbiter, and refund_days sets the refund date after the needed-by time.
+            an arbiter and a deemed grade. refund_days sets the refund date after the needed-by time, and is at
+            least 21 plus deemed_acceptance_days (7 days' grace, 7 to appeal, 7 for the arbiter), so the
+            purchaser cannot take the escrow back while an appeal is open.
         milestones: Dated part-payments of the top grade, up to 6:
             [{"name": "Halfway", "due_at": <Unix seconds>, "pct": 45}]. With deposit_pct they ask for
             at most 90%. Each is payable from its date, and the award pays only what is left.
