@@ -35,10 +35,11 @@ COVER = {"spec_url": "https://example.org/spec.md", "spec_hash": SPEC_HASH, "del
 
 
 def test_each_version_of_the_terms_is_pinned_by_its_hash():
-    # Never edit a published version; add the next one. This pin fails on any edit.
+    # Never edit a version a real contract signed; add the next one. v1 is a draft until then.
+    # This pin fails on any edit, so each edit is deliberate.
     assert terms.terms_hash("v0") == hashlib.sha256(terms.text("v0").encode()).hexdigest()
     assert terms.terms_hash("v0") == "39f1a595bfe991b897f76b51d877a5cb8e864c942ee6f181ec48c835881534dc"
-    assert terms.terms_hash("v1") == "c7fb1b7fd8f5d0d5a470ac703691a8c9011d65def1ed0567a71f636f6e48b4fb"
+    assert terms.terms_hash("v1") == "6f41fcd26fb7c763982719193dc388ee4f41f33759252c7a39bcf5c6757d3e66"
     assert terms.text() == terms.text(terms.CURRENT)
     with pytest.raises(ValueError, match="no version"):
         terms.text("v9")

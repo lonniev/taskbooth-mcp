@@ -25,7 +25,7 @@ def _offer(monkeypatch, mints: str | None) -> FakeMint:
 
 def _cover(**over):
     return {"deemed_grade": "Tidy", "deemed_acceptance_days": 3, "arbiter_npub": ARBITER, "escrow": True,
-            "escrow_mint": MINT_URL, "refund_days": 24} | over
+            "escrow_mint": MINT_URL, "refund_days": 24, "fail_after_hours": 168} | over
 
 
 async def _post(**over):

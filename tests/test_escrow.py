@@ -37,7 +37,8 @@ def mint():
 
 def cover(family, **over):
     return {"spec_hash": SPEC_HASH, "deemed_grade": "Tidy", "deemed_acceptance_days": 3,
-            "arbiter_npub": family["arbiter"], "escrow": True, "escrow_mint": MINT_URL, "refund_days": 24} | over
+            "arbiter_npub": family["arbiter"], "escrow": True, "escrow_mint": MINT_URL, "refund_days": 24,
+            "fail_after_hours": 168} | over
 
 
 async def _job(db, family, **over):
@@ -104,7 +105,8 @@ def test_the_refund_date_falls_after_any_appeal_could_be_settled(family):
     """Terms 6.6 let the client alone take the escrow back from the refund date, so it must not cut an appeal short."""
     parent = family["parent"]
     # 7 days' grace + the deemed-acceptance period + 7 to appeal + 7 for the arbiter.
-    assert least_refund_days(3) == 24 and least_refund_days(7) == 28
+    assert least_refund_days(3, 168) == 24 and least_refund_days(7, 168) == 28
+    assert least_refund_days(3, 1) == 18 and least_refund_days(3, 25) == 19
     with pytest.raises(ValueError, match="at least 24 days"):
         checked_cover(cover(family, refund_days=23), RUBRIC, purchaser=parent, mints=MINTS)
     assert checked_cover(cover(family, refund_days=24), RUBRIC, purchaser=parent, mints=MINTS)["refund_days"] == 24

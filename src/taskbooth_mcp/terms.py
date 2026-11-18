@@ -4,8 +4,9 @@ v0 was published under the working name MakerMarket; v1 adds Cashu escrow and th
 
 A job's cover page names the version and hash in force when it was posted, and
 that version never changes for the job (section 2.5). A new version is a new
-entry in :data:`VERSIONS`; an old one is never edited, and a test pins each hash
-so an edit cannot slip in unnoticed.
+entry in :data:`VERSIONS`; an old one is never edited once a real contract has
+signed it, and a test pins each hash so an edit cannot slip in unnoticed. Until
+the first real contract, v1 is a draft and is edited in place.
 
 The text was reviewed by Internet and agent consensus, not by a lawyer.
 """
@@ -176,6 +177,7 @@ Task Booth Standard Terms, version v1
 4.7 If an Arbiter is named, the Arbiter decides the appeal.
 4.8 If no Arbiter is named, the tie-breaker the Client named decides the appeal, and that grade settles the payment for that job.
 4.9 A grade settles payment only, and neither party gives up any other legal right by accepting it.
+4.10 The Cover Page may set late steps. Once a delivery is later than a step's hours past the delivery date, that step's percentage comes off the amount the grade awards, and the last such step applies.
 
 5. Payment
 5.1 All amounts are in bitcoin, stated in sats. A price shown in any other currency is only an estimate.
@@ -200,7 +202,7 @@ Task Booth Standard Terms, version v1
 6.8 The Worker may not mark the delivery done until the escrow is funded.
 6.9 After grading, the Worker's share is the Balance under section 5.7, and the Client's share is the rest.
 6.10 The Client and the Worker sign that split together, or the Arbiter signs it with either of them.
-6.11 The Arbiter signs with the Worker when the Client did not grade in time (section 4.5), and signs as the Arbiter decided after an appeal or a dispute.
+6.11 The Arbiter signs with the Worker when the Client did not grade in time (section 4.5), signs with the Client after a failure to deliver without cause (section 14.10), and signs as the Arbiter decided after an appeal or a dispute.
 6.12 Each share is paid to its owner's Lightning address.
 6.13 The Mint's fees to move the escrow and any Lightning routing fees come out of the escrow before it is shared.
 6.14 The Mint is chosen from those the Platform offers, and the Cover Page names it.
@@ -253,10 +255,16 @@ Task Booth Standard Terms, version v1
 14. Cancellation
 14.1 Before a claim, the Client may withdraw a posting at any time, at no cost.
 14.2 After the claim and before delivery, the Client may release the Worker, and the Worker keeps the deposit and any paid milestones.
-14.3 If the Worker gives the job back before delivery, or misses the delivery date by more than 7 days, the Worker must return the deposit, and keeps any paid milestones.
+14.3 If the Worker gives the job back before delivery, the Worker must return the deposit, and keeps any paid milestones.
 14.4 After the Worker is released, the Client may post the job again, on changed terms, to another Worker.
 14.5 After delivery, the job ends only through grading.
 14.6 A job held in escrow that ends without grading is settled by a split signed under section 6.5, or by the Client taking back the escrow under section 6.6.
+14.7 If the work is still not delivered when it is later than the failure point on the Cover Page, the job ends for failure to deliver.
+14.8 Within 7 days of the failure, the Worker may claim cause once, with reasons, such as the Client not supplying what section 3.3 requires. The Arbiter decides the claim within 7 days. If no Arbiter is named, no claim is made in time, or the Arbiter rejects the claim, the failure is without cause.
+14.9 After a failure without cause, payments already made stay where they are. The Platform does not move them back, and any claim to them is under section 15.
+14.10 After a failure without cause, for a job held in escrow, the Arbiter signs with the Client to release the whole escrow to the Client.
+14.11 After a failure without cause, every deliverable, draft and material the Worker handed to the Client before the end becomes the Client's property, despite sections 9.1, 9.2 and 9.5.
+14.12 If the Arbiter upholds the claim of cause, the Arbiter decides how any escrow is shared, and section 9 applies as written.
 
 15. Disputes
 15.1 The parties will try in good faith to settle any dispute directly first.
