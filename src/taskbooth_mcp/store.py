@@ -175,6 +175,21 @@ _COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deeme
 MAX_DELIVERABLES = 20
 MAX_DEEMED_DAYS = 60
 MAX_REFUND_DAYS = 90
+#: Days the Standard Terms give a late delivery (14.3), an appeal (4.6), and the arbiter to decide it.
+GRACE_DAYS = 7
+APPEAL_DAYS = 7
+ARBITER_DAYS = 7
+
+
+def least_refund_days(deemed_days: int) -> int:
+    """The shortest refund period that cannot cut an appeal short.
+
+    The client alone may take the escrow back from the refund date (terms 6.6),
+    so it must fall after the latest day the arbiter could still be deciding:
+    a delivery on the last day of grace, a grade on the last day of the
+    deemed-acceptance period, an appeal on its last day, and a week to decide.
+    """
+    return GRACE_DAYS + deemed_days + APPEAL_DAYS + ARBITER_DAYS
 MAX_MILESTONES = 6
 
 
@@ -184,12 +199,14 @@ def _flag(value: Any, what: str) -> bool:
     return value
 
 
-def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, ...]) -> dict[str, Any]:
+def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, ...],
+                   deemed_days: int = 0) -> dict[str, Any]:
     """The arbiter and escrow fields of a cover page.
 
     Escrow needs a named arbiter (without one the dates decide and the job stays
-    Lightning-only), a mint this Operator offers, and a refund date some days
-    after the needed-by time.
+    Lightning-only), a deemed grade (a client who never grades must not hold
+    the escrow hostage), a mint this Operator offers, and a refund date late
+    enough that an appeal is settled before it (``least_refund_days``).
     """
     from tollbooth.cashu import checked_mint_url
 
@@ -204,6 +221,9 @@ def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, .
         return {"arbiter_npub": arbiter, "escrow": False, "escrow_mint": "", "refund_days": 0}
     if not arbiter:
         raise ValueError("Escrow needs a named arbiter. Without one the job is paid by Lightning alone.")
+    if not deemed_days:
+        raise ValueError("Escrow needs a deemed grade and a deemed-acceptance period, so a silent client "
+                         "cannot hold the escrow until the refund date.")
     if not mints:
         raise ValueError("This Operator offers no escrow mint yet.")
     try:
@@ -212,7 +232,13 @@ def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, .
         raise ValueError(f"The escrow mint: {exc}.") from None
     if mint not in mints:
         raise ValueError(f"The escrow mint must be one this Operator offers: {', '.join(mints)}.")
-    days = _whole(days, "refund period in days", least=1, most=MAX_REFUND_DAYS)
+    least = least_refund_days(deemed_days)
+    if isinstance(days, int) and not isinstance(days, bool) and 0 < days < least:
+        raise ValueError(
+            f"The refund period must be at least {least} days: {GRACE_DAYS} days' grace for a late delivery, "
+            f"the {deemed_days}-day deemed-acceptance period, {APPEAL_DAYS} days to appeal, and {ARBITER_DAYS} "
+            "for the arbiter to decide. Before then the client alone could take the escrow back mid-appeal.")
+    days = _whole(days, "refund period in days", least=least, most=MAX_REFUND_DAYS)
     return {"arbiter_npub": arbiter, "escrow": True, "escrow_mint": mint, "refund_days": days}
 
 
@@ -268,7 +294,7 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
         "third_party_allowed": _flag(value.get("third_party_allowed", False), "third-party flag"),
         "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
         "venue": _text(value.get("venue", ""), "venue", 200),
-        **checked_escrow(value, purchaser=purchaser, mints=mints),
+        **checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days),
     }
 
 
