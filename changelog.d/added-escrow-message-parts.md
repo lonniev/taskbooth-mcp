@@ -1,1 +1,0 @@
-- Every escrow item to sign now carries `parts`: the inputs, outputs and quote its message is built from, so a signer's client rebuilds and checks the message itself instead of signing a digest it is handed.
