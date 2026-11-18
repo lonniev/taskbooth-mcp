@@ -628,6 +628,9 @@ async def accept_assessment(task_id: str, npub: PatronNpub = "") -> dict[str, An
 async def appeal_assessment(task_id: str, reasons: str = "", npub: PatronNpub = "") -> dict[str, Any]:
     """Ask the rubric's tie-breaker to look at your grade. You may appeal once.
 
+    On a job under the Standard Terms, appeal within 7 days of the grade (terms 4.6);
+    after that the grade is accepted as it stands, and this is refused.
+
     Args:
         task_id: The task you performed.
         reasons: Why the grade should be different.

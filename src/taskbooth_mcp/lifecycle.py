@@ -16,6 +16,8 @@ Four things the arrows above leave out:
 - An assessment starts **provisional**: the performer accepts it or appeals it
   once. It becomes **final** on acceptance, on the tie-breaker's decision, or at
   once when the grade is the rubric's top grade, which leaves nothing to appeal.
+  Under the Standard Terms the performer has 7 days to appeal (4.6); when they
+  pass unused, this service accepts the grade for them.
 - **Missed**: a task whose purchaser chose "cancel if missed" closes itself when
   its needed-by time passes before it is done. Like expired, nothing in the
   background does it; the first read after the deadline records it.
@@ -156,7 +158,8 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     # The operator grades only at the deemed grade, once the purchaser let the time run out.
     (State.DONE, Action.ASSESS): frozenset({Role.ASSESSOR, Role.OPERATOR}),
     (State.DONE, Action.REJECT): frozenset({Role.ASSESSOR}),
-    (State.ASSESSED, Action.ACCEPT): frozenset({Role.PERFORMER}),
+    # The operator accepts only for a performer who let the days to appeal run out.
+    (State.ASSESSED, Action.ACCEPT): frozenset({Role.PERFORMER, Role.OPERATOR}),
     (State.ASSESSED, Action.APPEAL): frozenset({Role.PERFORMER}),
     (State.APPEALED, Action.DECIDE_APPEAL): frozenset({Role.TIE_BREAKER}),
     (State.OWED, Action.CONFIRM_PAID): frozenset({Role.PERFORMER}),

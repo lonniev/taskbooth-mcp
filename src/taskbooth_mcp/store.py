@@ -524,6 +524,27 @@ class TaskStore:
             return
 
     @staticmethod
+    def _appeal_ends(task: dict[str, Any]) -> int | None:
+        """When the days to appeal a provisional grade run out, for a job under the Standard Terms (4.6)."""
+        graded = (task.get("assessment") or {}).get("at")
+        if not task.get("cover") or graded is None:
+            return None
+        return int(graded) + APPEAL_DAYS * 86_400
+
+    @classmethod
+    def _wants_lapse(cls, task: dict[str, Any], at: int) -> bool:
+        """A provisional grade the performer neither accepted nor appealed in time."""
+        ends = cls._appeal_ends(task)
+        return bool(task["state"] == State.ASSESSED and not task["final"] and ends is not None and ends < at)
+
+    async def _lapse(self, task: dict[str, Any], at: int) -> None:
+        """Accept the grade for the performer, as the terms say. A lost race means they moved first."""
+        try:
+            await self.act(task["performer"], task["task_id"], Action.ACCEPT, as_operator=True, lapsed=True, at=at)
+        except ValueError:
+            return
+
+    @staticmethod
     def _wants_miss(task: dict[str, Any], at: int) -> bool:
         """A cancel-if-missed task whose deadline passed before it was done."""
         return bool(
@@ -565,6 +586,9 @@ class TaskStore:
         if self._wants_deemed(task, at):
             await self._deem(task, at)
             task = await self._load(task_id) or task
+        if self._wants_lapse(task, at):
+            await self._lapse(task, at)
+            task = await self._load(task_id) or task
         return self._view(task, roles, at)
 
     async def tasks_of(self, npub: str, at: int | None = None, site: str = "") -> list[dict[str, Any]]:
@@ -589,10 +613,13 @@ class TaskStore:
             missed = [t for t in tasks if self._wants_miss(t, at)]
             stale = [t for t in tasks if self._wants_next(t, at)]
             deemed = [t for t in tasks if self._wants_deemed(t, at)]
-            if not missed and not stale and not deemed:
+            lapsed = [t for t in tasks if self._wants_lapse(t, at)]
+            if not missed and not stale and not deemed and not lapsed:
                 break
             for task in deemed:
                 await self._deem(task, at)
+            for task in lapsed:
+                await self._lapse(task, at)
             for task in missed:
                 await self._miss(task, at)
             for task in stale:
@@ -767,13 +794,15 @@ class TaskStore:
         performer_signature: str = "",
         as_operator: bool = False,
         deemed: bool = False,
+        lapsed: bool = False,
         at: int | None = None,
     ) -> dict[str, Any]:
         """Make one move on a task, as ``npub``, and return the task as it now stands.
 
         ``as_operator`` is for this service recording a payment a wallet proved,
-        or grading at the deemed grade (``deemed``); no npub earns that role by
-        being named anywhere.
+        or grading at the deemed grade (``deemed``), or accepting a grade whose
+        days to appeal ran out (``lapsed``); no npub earns that role by being
+        named anywhere.
 
         Raises:
             NotYours: ``npub`` has no part in this task.
@@ -795,6 +824,14 @@ class TaskStore:
         if not deemed and self._wants_deemed(task, at):
             await self._deem(task, at)
             task = await self._load(task_id) or task
+        if not lapsed and self._wants_lapse(task, at):
+            await self._lapse(task, at)
+            task = await self._load(task_id) or task
+            if action is Action.APPEAL:
+                raise ValueError(f"The {APPEAL_DAYS} days to appeal this grade have passed (terms 4.6), "
+                                 "so it was accepted as it stands.")
+        if as_operator and action is Action.ACCEPT and not lapsed:
+            raise ValueError("This service accepts a grade only when the days to appeal it have run out.")
 
         was = Standing(State(task["state"]), task["final"])
         reasons = _text(reasons, "reasons", MAX_TEXT)
