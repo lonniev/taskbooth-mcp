@@ -38,9 +38,18 @@ def test_each_version_of_the_terms_is_pinned_by_its_hash():
     # Never edit a published version; add the next one. This pin fails on any edit.
     assert terms.terms_hash("v0") == hashlib.sha256(terms.text("v0").encode()).hexdigest()
     assert terms.terms_hash("v0") == "39f1a595bfe991b897f76b51d877a5cb8e864c942ee6f181ec48c835881534dc"
+    assert terms.terms_hash("v1") == "c7fb1b7fd8f5d0d5a470ac703691a8c9011d65def1ed0567a71f636f6e48b4fb"
     assert terms.text() == terms.text(terms.CURRENT)
     with pytest.raises(ValueError, match="no version"):
         terms.text("v9")
+
+
+def test_v1_offers_cashu_escrow_with_a_named_arbiter():
+    v1 = terms.text("v1")
+    assert "MakerMarket" not in v1
+    assert "Any two of the three may release the escrow" in v1
+    assert "From the refund date on the Cover Page, the Client alone may take back the whole escrow." in v1
+    assert "holds no key that can move them" in v1
 
 
 def test_the_terms_put_the_refund_date_before_the_deemed_acceptance_date():
@@ -52,7 +61,7 @@ async def test_anyone_may_read_the_terms(billing):
     billing["proven"].add("")  # a free tool asks nobody to prove anything
     read = await call("standard_terms")
     assert read["version"] == terms.CURRENT and read["hash"] == terms.terms_hash()
-    assert read["text"].startswith("MakerMarket Standard Terms") and read["versions"] == ["v0"]
+    assert read["text"].startswith("Task Booth Standard Terms") and read["versions"] == ["v0", "v1"]
     refused = await call("standard_terms", version="v9")
     assert not refused["success"] and "no version" in refused["error"]
 
@@ -86,8 +95,12 @@ def test_a_cover_page_is_stamped_with_the_terms_in_force():
     ({"ip_option": "mine"}, "IP option"),
     ({"ip_option": "custom"}, "custom IP terms"),
     ({"confidential": "yes"}, "true or false"),
-    ({"escrow_enabled": True}, "Escrow is not offered"),
-    ({"arbiter_npub": "npub1x"}, "Escrow is not offered"),
+    ({"escrow_enabled": True}, "no field"),
+    ({"arbiter_npub": "npub1x"}, "arbiter is not a valid npub"),
+    ({"escrow": "yes"}, "true or false"),
+    ({"escrow": True}, "needs a named arbiter"),
+    ({"escrow_mint": "https://testnut.cashu.space"}, "belong only to a job held in escrow"),
+    ({"refund_days": 7}, "belong only to a job held in escrow"),
     ({"price_usd": 100}, "no field"),
 ])
 def test_every_cover_page_field_is_checked(change, says):

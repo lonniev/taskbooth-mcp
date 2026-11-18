@@ -32,6 +32,7 @@ from typing import Any
 
 from taskbooth_mcp import feed, orgs, terms
 from taskbooth_mcp.agreement import offer_hash, offer_statement
+from taskbooth_mcp.escrow import FUNDED_STATES, INVOICED, SETTLED, escrow_summary
 from taskbooth_mcp.lifecycle import (
     EXPIRED,
     LATE_KINDS,
@@ -168,15 +169,12 @@ def checked_late(value: Any) -> dict[str, Any]:
 
 #: What a cover page may say about who owns the finished work.
 IP_OPTIONS = ("assign", "license", "worker_keeps", "custom")
-#: Cover-page fields for escrow, which these terms do not offer yet.
-ESCROW_FIELDS = ("escrow_enabled", "escrow_threshold_sats", "arbiter_npub", "arbiter_advert_id", "arbiter_fee",
-                 "arbiter_fee_payer", "refund_timelock_days", "refund_lock_height", "deemed_lock_height",
-                 "escrow_outpoint")
 _COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deemed_acceptance_days", "ip_option",
                  "ip_custom_text", "confidential", "client_is_consumer", "third_party_allowed", "governing_law",
-                 "venue")
+                 "venue", "arbiter_npub", "escrow", "escrow_mint", "refund_days")
 MAX_DELIVERABLES = 20
 MAX_DEEMED_DAYS = 60
+MAX_REFUND_DAYS = 90
 MAX_MILESTONES = 6
 
 
@@ -186,18 +184,49 @@ def _flag(value: Any, what: str) -> bool:
     return value
 
 
-def checked_cover(value: Any, rubric: dict[str, Any]) -> dict[str, Any] | None:
+def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, ...]) -> dict[str, Any]:
+    """The arbiter and escrow fields of a cover page.
+
+    Escrow needs a named arbiter (without one the dates decide and the job stays
+    Lightning-only), a mint this Operator offers, and a refund date some days
+    after the needed-by time.
+    """
+    from tollbooth.cashu import checked_mint_url
+
+    arbiter = checked_npub(value["arbiter_npub"], "arbiter") if value.get("arbiter_npub") else ""
+    if arbiter and arbiter == purchaser:
+        raise ValueError("The arbiter must be someone other than the purchaser.")
+    held = _flag(value.get("escrow", False), "escrow flag")
+    mint, days = value.get("escrow_mint", ""), value.get("refund_days", 0)
+    if not held:
+        if mint or days:
+            raise ValueError("A mint and a refund period belong only to a job held in escrow.")
+        return {"arbiter_npub": arbiter, "escrow": False, "escrow_mint": "", "refund_days": 0}
+    if not arbiter:
+        raise ValueError("Escrow needs a named arbiter. Without one the job is paid by Lightning alone.")
+    if not mints:
+        raise ValueError("This Operator offers no escrow mint yet.")
+    try:
+        mint = checked_mint_url(_text(mint, "escrow mint", 300, required=True))
+    except ValueError as exc:
+        raise ValueError(f"The escrow mint: {exc}.") from None
+    if mint not in mints:
+        raise ValueError(f"The escrow mint must be one this Operator offers: {', '.join(mints)}.")
+    days = _whole(days, "refund period in days", least=1, most=MAX_REFUND_DAYS)
+    return {"arbiter_npub": arbiter, "escrow": True, "escrow_mint": mint, "refund_days": days}
+
+
+def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
+                  mints: tuple[str, ...] = ()) -> dict[str, Any] | None:
     """A job's cover page as it is stored, or ``None`` for a task that has none.
 
     The Standard Terms' version and hash are stamped here, never taken from the caller.
+    ``mints`` are the escrow mints this Operator offers.
     """
     if value is None or value == {}:
         return None
     if not isinstance(value, dict):
         raise ValueError("A cover page is an object of named fields.")
-    escrow = sorted(set(value) & set(ESCROW_FIELDS))
-    if escrow:
-        raise ValueError(f"Escrow is not offered yet, so these cannot be set: {', '.join(escrow)}.")
     unknown = sorted(set(value) - set(_COVER_FIELDS))
     if unknown:
         raise ValueError(f"A cover page has no field {', '.join(unknown)}. Its fields: {', '.join(_COVER_FIELDS)}.")
@@ -239,6 +268,7 @@ def checked_cover(value: Any, rubric: dict[str, Any]) -> dict[str, Any] | None:
         "third_party_allowed": _flag(value.get("third_party_allowed", False), "third-party flag"),
         "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
         "venue": _text(value.get("venue", ""), "venue", 200),
+        **checked_escrow(value, purchaser=purchaser, mints=mints),
     }
 
 
@@ -399,6 +429,8 @@ class TaskStore:
             roles.add(Role.ASSESSOR)
         if npub == task["tie_breaker"]:
             roles.add(Role.TIE_BREAKER)
+        if npub and npub == (task.get("cover") or {}).get("arbiter_npub"):
+            roles.add(Role.ARBITER)
         return frozenset(roles)
 
     @staticmethod
@@ -421,7 +453,12 @@ class TaskStore:
         view.setdefault("milestones", [])
         signed = task.get("agreement") or {}
         view["agreement"] = {"purchaser_signed": bool(signed.get("purchaser")),
-                             "performer_signed": bool(signed.get("performer"))}
+                             "performer_signed": bool(signed.get("performer")),
+                             "arbiter_signed": bool(signed.get("arbiter"))}
+        view.pop("named_tie_breaker", None)
+        if task.get("escrow"):
+            # Blinding factors and proofs stay here; a viewer sees where the escrow stands.
+            view["escrow"] = escrow_summary(task["escrow"], at)
         return view
 
     @staticmethod
@@ -579,16 +616,20 @@ class TaskStore:
         deposit_pct: int = 0,
         cover: dict[str, Any] | None = None,
         milestones: list[dict[str, Any]] | None = None,
+        escrow_mints: tuple[str, ...] = (),
         at: int | None = None,
     ) -> str:
-        """Post a task. The purchaser may name themselves in the audience."""
+        """Post a task. The purchaser may name themselves in the audience.
+
+        ``escrow_mints`` are the mints this Operator offers for escrow.
+        """
         at = int(time.time()) if at is None else at
         purchaser = checked_npub(purchaser, "purchaser")
         needed_by, data = self._terms(
             purchaser, title=title, rubric=rubric, audience=audience, needed_by=needed_by,
             description=description, earliest_start=earliest_start, every_days=every_days,
             tie_breaker=tie_breaker, assessors=assessors, signature=purchaser_signature, late=late,
-            deposit_pct=deposit_pct, cover=cover, milestones=milestones, at=at,
+            deposit_pct=deposit_pct, cover=cover, milestones=milestones, mints=escrow_mints, at=at,
         )
         data["site"] = checked_site(site)
         org_id, project_id = await self._filing(purchaser, org_id, project_id)
@@ -605,8 +646,13 @@ class TaskStore:
         purchaser: str, *, title: Any, rubric: Any, audience: Any, needed_by: Any, description: Any,
         earliest_start: Any, every_days: Any, tie_breaker: Any, assessors: Any, signature: Any,
         late: Any, at: int, deposit_pct: Any = 0, cover: Any = None, milestones: Any = None,
+        mints: tuple[str, ...] = (),
     ) -> tuple[int, dict[str, Any]]:
-        """A task's terms checked as a post or an edit hands them in: its needed-by time and sealed data."""
+        """A task's terms checked as a post or an edit hands them in: its needed-by time and sealed data.
+
+        A cover page that names an arbiter makes the arbiter the one who decides an
+        appeal (terms 4.7), in place of any tie-breaker named.
+        """
         if not isinstance(audience, list) or not 1 <= len(audience) <= MAX_PEOPLE:
             raise ValueError(f"A task names from 1 to {MAX_PEOPLE} npubs who may claim it.")
         delegates = assessors or []
@@ -621,6 +667,8 @@ class TaskStore:
 
         rubric = checked_rubric(rubric)
         deposit_pct = _whole(deposit_pct, "deposit percentage", most=MAX_DEPOSIT_PCT)
+        page = checked_cover(cover, rubric, purchaser=purchaser, mints=mints)
+        named = checked_npub(tie_breaker, "tie-breaker") if tie_breaker else purchaser
         return needed_by, {
             "title": _text(title, "title", MAX_TITLE, required=True),
             "description": _text(description, "description", MAX_TEXT),
@@ -628,14 +676,15 @@ class TaskStore:
             "audience": sorted({checked_npub(n, "audience member") for n in audience}),
             # The purchaser always grades; anyone else named here grades on their behalf.
             "assessors": sorted({purchaser, *(checked_npub(n, "assessor") for n in delegates)}),
-            "tie_breaker": checked_npub(tie_breaker, "tie-breaker") if tie_breaker else purchaser,
+            "tie_breaker": (page or {}).get("arbiter_npub") or named,
+            "named_tie_breaker": named,
             "earliest_start": earliest_start,
             "every_days": _whole(every_days, "repeat interval in days", most=3660),
             "signatures": {"purchaser": _text(signature, "signature", MAX_SIGNATURE), "performer": ""},
             "late": checked_late(late),
             # Part of the top grade paid when the task is claimed; 0 asks for none.
             "deposit_pct": deposit_pct,
-            "cover": checked_cover(cover, rubric),
+            "cover": page,
             "milestones": checked_milestones(milestones, deposit_pct=deposit_pct, needed_by=needed_by, at=at),
         }
 
@@ -755,6 +804,18 @@ class TaskStore:
                 raise ValueError("The purchaser has not signed this offer yet, so it cannot be claimed.")
             if action is Action.MARK_DONE and not signed.get("performer"):
                 raise ValueError("Sign the offer first (taskbooth_sign_offer or taskbooth_request_offer_signature).")
+            cover = task["cover"]
+            if action is Action.CLAIM and npub == cover.get("arbiter_npub"):
+                raise ValueError("The arbiter cannot also do the work.")
+            if action is Action.MARK_DONE and cover.get("arbiter_npub") and not signed.get("arbiter"):
+                raise ValueError("The arbiter has not signed this offer yet.")
+            held = (task.get("escrow") or {}).get("state", "")
+            if action is Action.MARK_DONE and cover.get("escrow") and held not in FUNDED_STATES:
+                raise ValueError("The Balance is not in escrow yet. The purchaser funds it with "
+                                 "taskbooth_escrow_invoice, then taskbooth_escrow_sign.")
+            if action is Action.RELEASE and held in FUNDED_STATES and held != SETTLED:
+                raise ValueError("The escrow holds sats for this job. Settle it first: propose a refund "
+                                 "with taskbooth_escrow_propose.")
 
         data = {k: task[k] for k in self._sealed_keys(task)}
         data.pop("nudges", None)  # a reminder is about the task as it stood; it moved on
@@ -775,6 +836,8 @@ class TaskStore:
                 data["milestones"] = [{**m, "sats": top_sats * m["pct"] // 100} for m in data.get("milestones") or []]
             case Action.RELEASE:
                 performer = None
+                if (data.get("escrow") or {}).get("state") == INVOICED:
+                    data.pop("escrow")  # an unpaid invoice; the next performer's escrow starts afresh
                 if data.get("agreement"):
                     data["agreement"] = {k: v for k, v in data["agreement"].items() if k != "performer"}
                 data["signatures"] = {**data["signatures"], "performer": ""}
@@ -906,7 +969,7 @@ class TaskStore:
 
     async def edit(
         self, purchaser: str, task_id: str, changes: dict[str, Any], signature: str = "",
-        at: int | None = None,
+        escrow_mints: tuple[str, ...] = (), at: int | None = None,
     ) -> dict[str, Any]:
         """Change a task's terms while nobody has claimed it. Only the purchaser may.
 
@@ -935,15 +998,26 @@ class TaskStore:
             needed_by=merged["needed_by"], description=merged["description"],
             earliest_start=min(task["earliest_start"], merged["needed_by"]) if isinstance(merged["needed_by"], int)
             else task["earliest_start"],
-            every_days=merged["every_days"], tie_breaker=task["tie_breaker"],
+            every_days=merged["every_days"], tie_breaker=task.get("named_tie_breaker") or task["tie_breaker"],
             assessors=[n for n in task["assessors"] if n != task["purchaser"]],
             signature=signature, late=merged["late"], deposit_pct=merged["deposit_pct"] or 0,
-            cover=merged["cover"], milestones=merged["milestones"], at=at,
+            cover=merged["cover"], milestones=merged["milestones"], mints=escrow_mints, at=at,
         )
         data = {k: task[k] for k in self._sealed_keys(task)} | terms
         data.pop("nudges", None)
         data.pop("agreement", None)  # the offer changed, so the signature on the old one no longer holds
         await self._bump(task, data, at, purchaser, Action.EDIT, {"changed": sorted(changes)}, needed_by=needed_by)
+        if data["tie_breaker"] != task["tie_breaker"]:
+            # Naming or dropping an arbiter changes who decides an appeal.
+            await self._neon._execute(
+                f"DELETE FROM {self._t('taskbooth_people')} WHERE task_id = $1 AND role = $2",
+                [task_id, Role.TIE_BREAKER.value],
+            )
+            await self._neon._execute(
+                f"INSERT INTO {self._t('taskbooth_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
+                "ON CONFLICT (task_id, npub, role) DO NOTHING",
+                [task_id, data["tie_breaker"], Role.TIE_BREAKER.value],
+            )
         if "audience" in changes:
             await self._neon._execute(
                 f"DELETE FROM {self._t('taskbooth_people')} WHERE task_id = $1 AND role = $2",
@@ -1026,11 +1100,12 @@ class TaskStore:
             raise NotYours(f"No task {task_id!r} is yours to see.")
         signed = task.get("agreement") or {}
         return {"statement": offer_statement(task), "statement_hash": offer_hash(task),
-                "signatures": {role: signed[role] for role in ("purchaser", "performer") if signed.get(role)}}
+                "signatures": {role: signed[role] for role in ("purchaser", "performer", "arbiter") if signed.get(role)}}
 
     async def sign(self, npub: str, task_id: str, record: dict[str, Any], *, operator_npub: str,
                    at: int | None = None) -> dict[str, Any]:
-        """Keep ``npub``'s signature on the offer: the purchaser while it is open, the performer once claimed.
+        """Keep ``npub``'s signature on the offer: the purchaser while it is open, the performer once claimed,
+        and a named arbiter at either time.
 
         The record must verify, be ``npub``'s, and be over this offer as it stands now.
         """
@@ -1042,7 +1117,10 @@ class TaskStore:
         if task is None or not self._may_see(task, roles):
             raise NotYours(f"No task {task_id!r} is yours to see.")
         step(Standing(State(task["state"]), task["final"]), Action.SIGN, roles)
-        role = "purchaser" if task["state"] == State.POSTED else "performer"
+        if Role.ARBITER in roles:
+            role = "arbiter"
+        else:
+            role = "purchaser" if task["state"] == State.POSTED else "performer"
         digest = offer_hash(task)
         why = verify_signature_record(record, statement_hash=digest, signer_npub=npub, operator_npub=operator_npub)
         if why is not None:
@@ -1052,6 +1130,37 @@ class TaskStore:
         await self._bump(task, data, at, npub, Action.SIGN,
                          {"role": role, "statement_hash": digest, "method": record.get("method", "")})
         return await self.get(npub, task_id, at)
+
+    # -- escrow ----------------------------------------------------------------
+
+    async def escrow_task(self, npub: str, task_id: str) -> tuple[dict[str, Any], frozenset[Role]]:
+        """A task ``npub`` may see, with their roles on it, for an escrow move."""
+        task = await self._load(task_id)
+        roles = self._roles(task, npub) if task else frozenset()
+        if task is None or not self._may_see(task, roles):
+            raise NotYours(f"No task {task_id!r} is yours to see.")
+        return task, roles
+
+    async def save_escrow(self, task: dict[str, Any], record: dict[str, Any], *, actor: str, action: Action,
+                          detail: dict[str, Any], at: int) -> None:
+        """Keep a new escrow record, unless the task changed since it was read."""
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        data["escrow"] = record
+        await self._bump(task, data, at, actor, action, detail)
+
+    async def keep_escrow(self, task_id: str, record: dict[str, Any], *, actor: str, action: Action,
+                          detail: dict[str, Any], at: int) -> None:
+        """Keep an escrow record after the mint acted on it: what the mint did is so, whatever else changed."""
+        for _ in range(5):
+            task = await self._load(task_id)
+            if task is None:  # pragma: no cover — tasks are never deleted
+                raise StoreUnavailable("the task could not be read back")
+            try:
+                await self.save_escrow(task, record, actor=actor, action=action, detail=detail, at=at)
+                return
+            except ValueError:
+                continue
+        raise StoreUnavailable("the escrow could not be written after the mint acted; read it again")
 
     # -- paid ahead: the deposit and milestones ------------------------------
 
@@ -1336,7 +1445,8 @@ class TaskStore:
             "brief": _text(brief, "Project's brief", MAX_TEXT),
             "budget_sats": _whole(budget_sats, "Project's budget in sats", most=orgs.MAX_BUDGET_SATS),
             "circle": sorted({checked_npub(n, "circle member") for n in people}),
-            "defaults": orgs.checked_defaults(defaults, text=_text, whole=_whole, flag=_flag, ip_options=IP_OPTIONS,
+            "defaults": orgs.checked_defaults(defaults, text=_text, whole=_whole, flag=_flag, npub=checked_npub,
+                                              ip_options=IP_OPTIONS,
                                               max_days=MAX_DEEMED_DAYS, max_text=MAX_TEXT),
         })
         if project_id:

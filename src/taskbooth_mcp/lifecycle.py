@@ -85,6 +85,7 @@ class Role(StrEnum):
     TIE_BREAKER = "tie_breaker"  # named in the rubric; decides an appeal
     OPERATOR = "operator"        # this service: recording a proved payment, closing a missed task
     MEMBER = "member"            # in the Organization the task is filed under: sees it, moves nothing
+    ARBITER = "arbiter"          # named on the cover page: signs the offer, decides appeals, holds an escrow key
 
 
 class Action(StrEnum):
@@ -108,6 +109,14 @@ class Action(StrEnum):
     MILESTONE_INVOICE = "milestone_invoice"
     CONFIRM_MILESTONE = "confirm_milestone"
     SIGN = "sign"
+    # Escrow moves change no state; they are checked by the escrow itself and kept as events.
+    ESCROW_INVOICE = "escrow_invoice"
+    ESCROW_FUND = "escrow_fund"
+    ESCROW_PROPOSE = "escrow_propose"
+    ESCROW_SIGN = "escrow_sign"
+    ESCROW_SPLIT = "escrow_split"
+    ESCROW_COLLECT = "escrow_collect"
+    ESCROW_PAID_OUT = "escrow_paid_out"
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,8 +180,9 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.CLAIMED, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
     (State.DONE, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
     # The purchaser signs the offer while it is open; the performer signs the same offer once claimed.
-    (State.POSTED, Action.SIGN): frozenset({Role.PURCHASER}),
-    (State.CLAIMED, Action.SIGN): frozenset({Role.PERFORMER}),
+    # A named arbiter signs it too, before or after the claim.
+    (State.POSTED, Action.SIGN): frozenset({Role.PURCHASER, Role.ARBITER}),
+    (State.CLAIMED, Action.SIGN): frozenset({Role.PERFORMER, Role.ARBITER}),
 }
 
 

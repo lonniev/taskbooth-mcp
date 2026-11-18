@@ -58,6 +58,12 @@ def offer_statement(task: dict[str, Any]) -> str:
         lines.append(f"Standard Terms: {cover['terms_version']} sha256 {cover['terms_hash']}")
         if cover.get("spec_hash"):
             lines.append(f"Spec sha256: {cover['spec_hash']}")
+        if cover.get("arbiter_npub"):
+            lines.append(f"Arbiter: {cover['arbiter_npub']}")
+        if cover.get("escrow"):
+            refund_at = int(task["needed_by"]) + int(cover["refund_days"]) * 86400
+            lines.append(f"Escrow: the Balance held at {cover['escrow_mint']}, refundable to the purchaser "
+                         f"from {_when(refund_at)}")
         lines.append(f"Cover page sha256: {_sha(cover)}")
     return normalized_statement("\n".join(lines))
 
