@@ -40,8 +40,31 @@ Fee: 1 sat per 1000-sat escrow (the mint charges 100 ppk per input).
 5. Keep escrow proofs apart from ordinary coins: a swap mixing SIG_ALL inputs with plain ones fails (the CDK mint answers with error 50000).
 6. A lock has one date. Here it is the refund date; a silent client is covered by arbiter + worker.
 
+## Part 2: Lightning in and out (`spike_lightning.py`)
+
+No one holds a Cashu wallet. The coordinator asks the mint for an invoice bound to the client's key (NUT-20); the client pays it from any Lightning wallet; the coordinator mints straight into the lock, with the client's signature on the outputs. Payouts are melted to each party's own Lightning invoice. A payout wholly to one party is one melt from the escrow. A split by grade is one swap signed by client and worker into two groups, each locked to its recipient, then one melt per recipient, signed by that recipient.
+
+| Check | Who signs | Result |
+|---|---|---|
+| Client's paid invoice minted into the lock | client | escrow funded |
+| The same invoice minted with the worker's signature | worker | refused (20008) |
+| Award split 700 / 299 into two groups | client + worker | done |
+| Coordinator melts the worker's group to its own invoice | coordinator | refused (20008) |
+| Worker's group to the worker's invoice | worker | 686 paid |
+| Client's group to the client's invoice | client | 293 paid |
+| Dispute: escrow straight to the worker's invoice | arbiter + worker | 980 paid |
+| Worker alone melts the escrow | worker | refused (20008) |
+| Refund after the date: escrow straight to the client's invoice | client | 980 paid |
+
+The mint accepted the current NUT-20 message (`Cashu_MintQuoteSig_v1`, length-prefixed).
+
+### Findings
+
+7. The funding invoice is bound to the client's key, so a leaked quote id cannot be minted by anyone else.
+8. The fee reserve (about 2% here) is held back from every melt, and whatever Lightning routing does not use comes back as ecash change, locked to the recipient. On testnut all of it came back (13, 5, 19 and 19 sats). To keep "no Cashu wallet" true, the Operator needs a plan for that change: add it to the recipient's next payout, or melt it once it is worth a payment. A mint with a smaller reserve shrinks it.
+9. A split by grade costs two steps and two sets of fees; a payout to one party costs one.
+
 ## Not yet tried
 
-- Minting straight into the lock from a Lightning invoice the client pays, so the client needs no Cashu wallet.
-- Melting the escrow straight to each party's Lightning invoice with a SIG_ALL melt (the message adds the quote id), so no one needs a Cashu wallet to be paid.
-- A real mint, its fees and its limits.
+- A real mint, its fees, its limits and its reserve on real Lightning routes.
+- The change plan in finding 8.
