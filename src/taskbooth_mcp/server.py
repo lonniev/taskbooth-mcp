@@ -23,8 +23,10 @@ from typing import Any
 
 from fastmcp import FastMCP
 from mcp.types import Icon
+from tollbooth import cashu
 from tollbooth.credential_templates import CredentialTemplate, FieldSpec
 from tollbooth.credential_validators import validate_btcpay_creds
+from tollbooth.lnurl import LnurlResolutionError, resolve_lightning_address
 from tollbooth.params import PatronNpub
 from tollbooth.properties import PropertySpec
 from tollbooth.runtime import OperatorRuntime, register_standard_tools
@@ -39,7 +41,7 @@ from tollbooth.tool_identity import (
     ToolIdentity,
 )
 
-from taskbooth_mcp import __version__, feed, payout, price, terms
+from taskbooth_mcp import __version__, escrow, feed, payout, price, terms
 from taskbooth_mcp.lifecycle import Action, State
 from taskbooth_mcp.store import NotYours, TaskStore
 
@@ -157,6 +159,11 @@ REMOVE_MEMBER_UUID = "0743b2af-ef8e-449d-90b1-d70f2c665b4b"
 SAVE_PROJECT_UUID = "35b7db5c-db49-46d5-a2a2-b3e80c261fb0"
 ARCHIVE_PROJECT_UUID = "da662acd-f718-4308-b006-c64faf3bdf18"
 GET_PROJECT_UUID = "49b3fa09-53cd-48d5-a5cb-90185427663d"
+ESCROW_INVOICE_UUID = "f56bc35c-58c4-486e-b6b0-7a20d44d4061"
+ESCROW_STATUS_UUID = "cc34e815-f5cb-4690-8c0e-56928aa3844c"
+ESCROW_PROPOSE_UUID = "d69f5474-42e1-4899-b77e-de6bf4bb3491"
+ESCROW_COLLECT_UUID = "a308862f-7b58-499d-80b1-f3ab68295a47"
+ESCROW_SIGN_UUID = "2ea31626-27a0-44c4-b07c-b11faf20925e"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -248,6 +255,16 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Close a Project to new tasks, or open it again"),
     _identity(GET_PROJECT_UUID, "get_project", "read", "Get a Project", READS,
               "A Project with what its tasks have committed and paid"),
+    _identity(ESCROW_INVOICE_UUID, "escrow_invoice", "write", "Fund a job's escrow", WRITES_REMOTE,
+              "The Lightning invoice that puts a claimed job's Balance into escrow at the agreed mint"),
+    _identity(ESCROW_STATUS_UUID, "escrow_status", "read", "Read a job's escrow", READS,
+              "Where a job's escrow stands, and what you may sign now"),
+    _identity(ESCROW_PROPOSE_UUID, "escrow_propose", "write", "Propose an escrow split", WRITES,
+              "Propose how a job's escrow divides between performer and purchaser"),
+    _identity(ESCROW_COLLECT_UUID, "escrow_collect", "write", "Collect from escrow", WRITES_REMOTE,
+              "Ready your share of a job's escrow to be paid to your payout address"),
+    _identity(ESCROW_SIGN_UUID, "escrow_sign", "write", "Sign for escrow", WRITES_REMOTE,
+              "Sign what a job's escrow is waiting for: funding it, a split, or your payout"),
     _identity(BTC_PRICE_UUID, "btc_price", "free", "Bitcoin's price", READS_REMOTE,
               "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
 ]
@@ -257,6 +274,14 @@ PATRON_PROPERTIES: dict[str, PropertySpec] = {
     "payout_address": PropertySpec(
         kind="text", default=None, label="Payout address",
         description="Optional. The Lightning address your rewards are paid to, like name@wallet.example.",
+    ),
+}
+
+#: What the owner sets for this Operator (taskbooth_set_operator_property).
+OPERATOR_PROPERTIES: dict[str, PropertySpec] = {
+    "escrow_mints": PropertySpec(
+        kind="text", default=None, label="Escrow mints",
+        description="The Cashu mints offered for escrow: https addresses separated by spaces. Empty offers none.",
     ),
 }
 
@@ -292,6 +317,7 @@ runtime = OperatorRuntime(
     credential_validator=validate_btcpay_creds,
     holder_auth_url=SERVICE_URL,
     patron_properties=PATRON_PROPERTIES,
+    operator_properties=OPERATOR_PROPERTIES,
 )
 
 tool = register_standard_tools(
@@ -319,6 +345,29 @@ async def payout_address_of(npub: str) -> str:
     values = await (await runtime.property_store()).values(npub)
     value = values.get("payout_address", ("", ""))[0]
     return value if isinstance(value, str) else ""
+
+
+async def escrow_mints() -> tuple[str, ...]:
+    """The mints the owner offers for escrow; an address that is not a public https mint is skipped."""
+    value = await runtime.operator_property("escrow_mints")
+    mints = []
+    for word in (value or "").replace(",", " ").split() if isinstance(value, str) else []:
+        try:
+            mints.append(cashu.checked_mint_url(word))
+        except ValueError:
+            logger.warning("escrow_mints names an address that is not a public https mint; skipped")
+    return tuple(mints)
+
+
+def _mint_for(url: str) -> cashu.MintClient:
+    return cashu.MintClient(url)
+
+
+async def _invoice_for(address: str, sats: int) -> str:
+    try:
+        return await resolve_lightning_address(address, sats)
+    except LnurlResolutionError as exc:
+        raise ValueError(f"Your payout address could not make an invoice: {exc}") from None
 
 
 async def _do(coro: Any) -> Any:
@@ -391,7 +440,11 @@ async def post_task(
              "deemed_grade": "<a rubric grade>", "deemed_acceptance_days": 14,
              "ip_option": "assign" | "license" | "worker_keeps" | "custom", "ip_custom_text": "…",
              "confidential": false, "client_is_consumer": false, "third_party_allowed": false,
-             "governing_law": "…", "venue": "…"}. Every field is optional. Escrow is not offered yet.
+             "governing_law": "…", "venue": "…",
+             "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 14}.
+            Every field is optional. A named arbiter signs the offer and decides any appeal. Escrow holds the
+            Balance at a mint this Operator offers (taskbooth_get_operator_properties, escrow_mints); it needs
+            an arbiter, and refund_days sets the refund date after the needed-by time.
         milestones: Dated part-payments of the top grade, up to 6:
             [{"name": "Halfway", "due_at": <Unix seconds>, "pct": 45}]. With deposit_pct they ask for
             at most 90%. Each is payable from its date, and the award pays only what is left.
@@ -404,7 +457,7 @@ async def post_task(
         description=description, earliest_start=earliest_start, every_days=every_days,
         tie_breaker=tie_breaker, assessors=assessors, org_id=org_id, project_id=project_id,
         purchaser_signature=signature, late=late, deposit_pct=deposit_pct, cover=cover, milestones=milestones,
-        site=site,
+        site=site, escrow_mints=await escrow_mints(),
     )
     return {"ok": True, "task": await db.get(runtime.resolve_npub(npub), task_id)}
 
@@ -443,7 +496,8 @@ async def edit_task(
              "cover": cover, "milestones": milestones}
     changes = {k: v for k, v in given.items() if v is not None}
     db = await store()
-    task = await _do(db.edit(runtime.resolve_npub(npub), str(task_id), changes, signature=signature))
+    task = await _do(db.edit(runtime.resolve_npub(npub), str(task_id), changes, signature=signature,
+                             escrow_mints=await escrow_mints()))
     return {"ok": True, "task": task}
 
 
@@ -529,9 +583,19 @@ async def claim_task(task_id: str, signature: str = "", npub: PatronNpub = "") -
 async def release_claim(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
     """Give a task you claimed back, or, as its purchaser, take back a claim that has gone stale.
 
+    A job whose escrow holds sats is settled first, with taskbooth_escrow_propose.
+
     Args:
         task_id: The task.
     """
+    me = runtime.resolve_npub(npub)
+    task, _ = await _do((await store()).escrow_task(me, str(task_id)))
+    record = task.get("escrow") or {}
+    if record.get("state") == escrow.INVOICED:
+        state = str((await _mint_for(record["mint"]).mint_quote_state(record["funding"]["quote"])).get("state", ""))
+        if state.upper() != "UNPAID":
+            raise ValueError("The escrow invoice was paid. Fund the escrow with taskbooth_escrow_sign, "
+                             "then settle it with taskbooth_escrow_propose.")
     return await _move(npub, task_id, Action.RELEASE)
 
 
@@ -852,9 +916,106 @@ async def receive_offer_signature(
 
 
 @tool
+@runtime.paid_tool(ESCROW_INVOICE_UUID)
+async def escrow_invoice(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """The Lightning invoice that puts a claimed job's Balance into escrow. Only the purchaser.
+
+    The Balance is the top grade less the deposit and milestones. Pay the invoice
+    from any wallet, then sign sign_digest with your Nostr key (BIP-340) and pass
+    the signature to taskbooth_escrow_sign: the mint then locks the sats to the
+    purchaser, performer and arbiter, any two of whom may move them, and after the
+    refund date to the purchaser alone. Asking again returns the same invoice until
+    it expires. Purchaser, performer and arbiter must all have signed the offer.
+
+    Args:
+        task_id: A claimed job whose cover page asks for escrow.
+    """
+    db = await store()
+    me = runtime.resolve_npub(npub)
+    return {"ok": True, "escrow": await _do(escrow.open_invoice(db, _mint_for, me, str(task_id), int(time.time())))}
+
+
+@tool
+@runtime.paid_tool(ESCROW_STATUS_UUID)
+async def escrow_status(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Where a job's escrow stands, and in for_you what you may sign now, each with its sign_digest.
+
+    Sign a sign_digest with your own Nostr key as a BIP-340 Schnorr signature and
+    pass it to taskbooth_escrow_sign.
+
+    Args:
+        task_id: The job.
+    """
+    db = await store()
+    me = runtime.resolve_npub(npub)
+    return {"ok": True, **await _do(escrow.status(db, me, str(task_id), int(time.time())))}
+
+
+@tool
+@runtime.paid_tool(ESCROW_PROPOSE_UUID)
+async def escrow_propose(task_id: str, to_performer: int = -1, npub: PatronNpub = "") -> dict[str, Any]:
+    """Propose how a job's escrow divides between the performer and the purchaser.
+
+    The purchaser, the performer or the arbiter may propose; a new proposal
+    replaces an unsigned one. It takes effect once two of the three sign it, or the
+    purchaser alone after the refund date when it gives the performer nothing. Each
+    share is then paid to its owner's payout address with taskbooth_escrow_collect.
+    The mint's fee to move the escrow comes out of the total first.
+
+    Args:
+        task_id: The job.
+        to_performer: The performer's sats; the purchaser gets the rest. Omit (or -1) to propose the
+            award of a job with a final grade.
+    """
+    db = await store()
+    me = runtime.resolve_npub(npub)
+    share = None if to_performer == -1 else to_performer
+    return {"ok": True, **await _do(escrow.propose(db, me, str(task_id), share, int(time.time())))}
+
+
+@tool
+@runtime.paid_tool(ESCROW_COLLECT_UUID)
+async def escrow_collect(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Ready your share of a job's escrow to be paid to your payout address.
+
+    Fetches an invoice from your payout_address for your share less the mint's
+    Lightning fee reserve, and returns the sign_digest to sign. Pass that
+    signature to taskbooth_escrow_sign and the mint pays the invoice. Whatever of
+    the reserve Lightning does not use stays here for you to collect later.
+
+    Args:
+        task_id: A job whose escrow has been split.
+    """
+    db = await store()
+    me = runtime.resolve_npub(npub)
+    address = await payout_address_of(me)
+    return {"ok": True, **await _do(escrow.collect(db, _mint_for, _invoice_for, me, str(task_id), address,
+                                                   int(time.time())))}
+
+
+@tool
+@runtime.paid_tool(ESCROW_SIGN_UUID)
+async def escrow_sign(task_id: str, signature: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Sign what a job's escrow is waiting on from you, and carry it out once enough have signed.
+
+    In order: your payout from taskbooth_escrow_collect, funding the escrow (the
+    purchaser, once the invoice is paid), or a proposed split. The signature is
+    BIP-340 Schnorr by your Nostr key over the sign_digest that
+    taskbooth_escrow_status lists for you.
+
+    Args:
+        task_id: The job.
+        signature: 128 hex characters.
+    """
+    db = await store()
+    me = runtime.resolve_npub(npub)
+    return {"ok": True, **await _do(escrow.sign(db, _mint_for, me, str(task_id), signature, int(time.time())))}
+
+
+@tool
 @runtime.paid_tool(STANDARD_TERMS_UUID)
 async def standard_terms(version: str = "") -> dict[str, Any]:
-    """The MakerMarket Standard Terms: their text, and the sha256 a cover page and a signature name.
+    """The Task Booth Standard Terms: their text, and the sha256 a cover page and a signature name.
 
     Args:
         version: A version such as "v0". Empty for the current one.

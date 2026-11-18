@@ -29,7 +29,7 @@ MEMBER = "member"
 
 #: The cover fields a Project may suggest. Deliverables, the spec and the deemed grade belong to each task.
 DEFAULT_FIELDS = ("deemed_acceptance_days", "ip_option", "ip_custom_text", "confidential", "client_is_consumer",
-                  "third_party_allowed", "governing_law", "venue")
+                  "third_party_allowed", "governing_law", "venue", "arbiter_npub")
 
 
 def standing_in(owner: str, members: set[str] | frozenset[str], npub: str) -> str:
@@ -54,11 +54,14 @@ def may_manage(place: str) -> bool:
     return place == OWNER
 
 
-def checked_defaults(value: Any, *, text: Any, whole: Any, flag: Any, ip_options: tuple[str, ...],
+def checked_defaults(value: Any, *, text: Any, whole: Any, flag: Any, npub: Any, ip_options: tuple[str, ...],
                      max_days: int, max_text: int) -> dict[str, Any]:
     """A Project's default cover terms, checked as a cover page checks the same fields.
 
-    ``text``, ``whole`` and ``flag`` are the store's own checkers, so a default
+    ``arbiter_npub`` is the arbiter a new task in the Project names, whom the
+    professional may accept or decline when they take it on.
+
+    ``text``, ``whole``, ``flag`` and ``npub`` are the store's own checkers, so a default
     is refused for exactly the reasons the same value on a cover page would be.
     """
     if value is None or value == {}:
@@ -81,6 +84,7 @@ def checked_defaults(value: Any, *, text: Any, whole: Any, flag: Any, ip_options
         "third_party_allowed": flag(value.get("third_party_allowed", False), "third-party flag"),
         "governing_law": text(value.get("governing_law", ""), "governing law", 200),
         "venue": text(value.get("venue", ""), "venue", 200),
+        "arbiter_npub": npub(value["arbiter_npub"], "default arbiter") if value.get("arbiter_npub") else "",
     }
 
 
