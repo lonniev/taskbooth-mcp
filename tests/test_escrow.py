@@ -371,3 +371,42 @@ async def test_a_task_without_a_cover_page_keeps_no_appeal_clock(queue, family):
     await db.act(family["parent"], task, Action.ASSESS, grade="Tidy", at=NOW + 30)
     late = await db.act(family["child"], task, Action.APPEAL, reasons="Fair is fair", at=NOW + 30 + 60 * DAY)
     assert late["state"] == "appealed"
+
+
+def _rebuilt(parts):
+    """The message a signer's client rebuilds from the parts it is handed."""
+    from tollbooth import cashu
+
+    if parts["kind"] == "mint_quote":
+        return cashu.mint_quote_message(parts["quote"], parts["outputs"])
+    message = cashu.swap_message(parts["inputs"], parts["outputs"])
+    return message + parts["quote"] if parts["kind"] == "melt" else message
+
+
+async def test_every_message_to_sign_can_be_rebuilt_from_its_parts(queue, family, keys, mint):
+    _, db = queue
+    mint_for = lambda url: mint
+    task = await _claimed(db, keys, family)
+    bill = await escrow.open_invoice(db, mint_for, family["parent"], task, NOW + 20)
+    [fund] = (await escrow.status(db, family["parent"], task, NOW + 21))["for_you"]
+    assert fund["parts"] == bill["parts"] and fund["parts"]["kind"] == "mint_quote"
+    assert escrow.digest(_rebuilt(bill["parts"])) == bill["sign_digest"]
+    assert sum(o["amount"] for o in bill["parts"]["outputs"]) == BALANCE
+    mint.pay(list(mint.quotes)[-1])
+    await escrow.sign(db, mint_for, family["parent"], task, _sign_pending(keys, "parent", bill), NOW + 30)
+
+    await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 40)
+    await db.act(family["parent"], task, Action.ASSESS, grade="Spotless", at=NOW + 50)
+    proposal = await escrow.propose(db, family["parent"], task, None, NOW + 60)
+    [mine] = (await escrow.status(db, family["child"], task, NOW + 61))["for_you"]
+    assert mine["parts"] == proposal["parts"] and mine["parts"]["kind"] == "swap"
+    assert escrow.digest(_rebuilt(mine["parts"])) == mine["sign_digest"] == proposal["sign_digest"]
+    child_key = keys["child"].public_key.hex()
+    assert all(child_key in i["secret"] for i in mine["parts"]["inputs"])
+    for who in ("parent", "child"):
+        await escrow.sign(db, mint_for, family[who], task, _sign_pending(keys, who, proposal), NOW + 70)
+
+    ready = await escrow.collect(db, mint_for, _invoice_for, family["child"], task, "kid@wallet.example", NOW + 90)
+    [collect] = (await escrow.status(db, family["child"], task, NOW + 91))["for_you"]
+    assert collect["parts"] == ready["parts"] and ready["parts"]["kind"] == "melt" and ready["parts"]["quote"]
+    assert escrow.digest(_rebuilt(ready["parts"])) == ready["sign_digest"] == collect["sign_digest"]

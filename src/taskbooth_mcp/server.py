@@ -945,10 +945,13 @@ async def escrow_invoice(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
 @tool
 @runtime.paid_tool(ESCROW_STATUS_UUID)
 async def escrow_status(task_id: str, npub: PatronNpub = "") -> dict[str, Any]:
-    """Where a job's escrow stands, and in for_you what you may sign now, each with its sign_digest.
+    """Where a job's escrow stands, and in for_you what you may sign now, each with its sign_digest and parts.
 
     Sign a sign_digest with your own Nostr key as a BIP-340 Schnorr signature and
-    pass it to taskbooth_escrow_sign.
+    pass it to taskbooth_escrow_sign. Before signing, a careful client rebuilds the
+    message from parts (kind mint_quote: NUT-20; swap and melt: NUT-11 SIG_ALL, the
+    melt ending in the quote id), checks the inputs are locked to its own key, and
+    signs the sha256 of its own rebuild.
 
     Args:
         task_id: The job.
