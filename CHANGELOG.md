@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.4.1] — 2026-11-18
+
+### Changed
+
+- Escrow now needs a deemed grade, and its refund period must be at least 21 days plus the deemed-acceptance period (7 days' grace for a late delivery, 7 to appeal, 7 for the arbiter to decide). A shorter one let the purchaser take the escrow back alone while an appeal was still open.
+
 ## [0.4.0] — 2026-11-18
 
 ### Added

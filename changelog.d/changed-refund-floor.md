@@ -1,1 +1,0 @@
-- Escrow now needs a deemed grade, and its refund period must be at least 21 days plus the deemed-acceptance period (7 days' grace for a late delivery, 7 to appeal, 7 for the arbiter to decide). A shorter one let the purchaser take the escrow back alone while an appeal was still open.
