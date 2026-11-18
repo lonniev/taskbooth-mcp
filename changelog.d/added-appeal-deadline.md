@@ -1,1 +1,0 @@
-- On a job under the Standard Terms, the performer now has 7 days from a grade to appeal it (terms 4.6). After that the grade is accepted as it stands, and a late appeal is refused. Tasks without a cover page keep no appeal clock.

@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.4.2] — 2026-11-18
+
+### Added
+
+- On a job under the Standard Terms, the performer now has 7 days from a grade to appeal it (terms 4.6). After that the grade is accepted as it stands, and a late appeal is refused. Tasks without a cover page keep no appeal clock.
+
 ## [0.4.1] — 2026-11-18
 
 ### Changed
