@@ -31,9 +31,11 @@ import time
 from typing import Any
 
 from taskbooth_mcp import feed, orgs, terms
-from taskbooth_mcp.agreement import offer_hash, offer_statement
+from taskbooth_mcp.agreement import VERDICTS, inspection_hash, offer_hash, offer_statement
 from taskbooth_mcp.escrow import FUNDED_STATES, INVOICED, SETTLED, escrow_summary
 from taskbooth_mcp.lifecycle import (
+    APPEAL_DAYS,
+    ARBITER_DAYS,
     EXPIRED,
     LATE_KINDS,
     MAX_DEPOSIT_PCT,
@@ -51,9 +53,13 @@ from taskbooth_mcp.lifecycle import (
     step,
     step_sats,
 )
+from taskbooth_mcp.reputation import reputation_of
 
 MAX_TITLE = 200
 MAX_TEXT = 4000
+MAX_OPINION = 2000
+#: Where delivered work stands, and so may be inspected: from delivery to payment, or rejected.
+INSPECTABLE = (State.DONE, State.ASSESSED, State.APPEALED, State.OWED, State.PAID, State.REJECTED)
 MAX_GRADES = 12
 MAX_GRADE_SATS = 100_000_000
 MAX_PEOPLE = 500
@@ -196,13 +202,11 @@ def checked_late(value: Any) -> dict[str, Any]:
 IP_OPTIONS = ("assign", "license", "worker_keeps", "custom")
 _COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deemed_acceptance_days", "ip_option",
                  "ip_custom_text", "confidential", "client_is_consumer", "third_party_allowed", "governing_law",
-                 "venue", "arbiter_npub", "escrow", "escrow_mint", "refund_days", "fail_after_hours")
+                 "venue", "arbiter_npub", "inspector_npub", "escrow", "escrow_mint", "refund_days",
+                 "fail_after_hours")
 MAX_DELIVERABLES = 20
 MAX_DEEMED_DAYS = 60
 MAX_REFUND_DAYS = 90
-#: Days the Standard Terms give an appeal or a claim of cause (4.6, 14.7), and the arbiter to decide it.
-APPEAL_DAYS = 7
-ARBITER_DAYS = 7
 
 
 def fail_days(fail_after_hours: int) -> int:
@@ -316,6 +320,11 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
     custom = _text(value.get("ip_custom_text", ""), "custom IP terms", MAX_TEXT, required=ip == "custom")
     # Hours past the needed-by time after which undelivered work is a failure to deliver (terms 14.7); 0 for none.
     fail = _whole(value.get("fail_after_hours", 0), "failure point in hours late", most=MAX_LATE_HOURS)
+    held = checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days, fail_after_hours=fail)
+    # An independent party who signs the offer and may give one signed opinion of the work (terms 8).
+    inspector = checked_npub(value["inspector_npub"], "inspector") if value.get("inspector_npub") else ""
+    if inspector and inspector in (purchaser, held["arbiter_npub"]):
+        raise ValueError("The inspector must be someone other than the purchaser and the arbiter.")
 
     return {
         "terms_version": terms.CURRENT,
@@ -333,7 +342,8 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
         "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
         "venue": _text(value.get("venue", ""), "venue", 200),
         "fail_after_hours": fail,
-        **checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days, fail_after_hours=fail),
+        "inspector_npub": inspector,
+        **held,
     }
 
 
@@ -496,6 +506,8 @@ class TaskStore:
             roles.add(Role.TIE_BREAKER)
         if npub and npub == (task.get("cover") or {}).get("arbiter_npub"):
             roles.add(Role.ARBITER)
+        if npub and npub == (task.get("cover") or {}).get("inspector_npub"):
+            roles.add(Role.INSPECTOR)
         return frozenset(roles)
 
     @staticmethod
@@ -519,7 +531,9 @@ class TaskStore:
         signed = task.get("agreement") or {}
         view["agreement"] = {"purchaser_signed": bool(signed.get("purchaser")),
                              "performer_signed": bool(signed.get("performer")),
-                             "arbiter_signed": bool(signed.get("arbiter"))}
+                             "arbiter_signed": bool(signed.get("arbiter")),
+                             "inspector_signed": bool(signed.get("inspector"))}
+        view["inspection"] = {k: v for k, v in (task.get("inspection") or {}).items() if k != "record"} or None
         view.pop("named_tie_breaker", None)
         if task.get("escrow"):
             # Blinding factors and proofs stay here; a viewer sees where the escrow stands.
@@ -832,6 +846,7 @@ class TaskStore:
             [(n, Role.AUDIENCE) for n in data["audience"]]
             + [(n, Role.ASSESSOR) for n in data["assessors"]]
             + [(data["tie_breaker"], Role.TIE_BREAKER)]
+            + self._inspector_row(data)
         )
         for npub, role in people:
             await self._neon._execute(
@@ -841,6 +856,12 @@ class TaskStore:
             )
         await self._record(task_id, 1, at, actor, action, "", State.POSTED.value, {})
         return True
+
+    @staticmethod
+    def _inspector_row(data: dict[str, Any]) -> list[tuple[str, Role]]:
+        """The inspector a cover page names, as a person on the task, so their list finds it."""
+        named = (data.get("cover") or {}).get("inspector_npub")
+        return [(named, Role.INSPECTOR)] if named else []
 
     async def _record(
         self, task_id: str, seq: int, at: int, actor: str, action: str, was: str, now: str,
@@ -951,8 +972,12 @@ class TaskStore:
             cover = task["cover"]
             if action is Action.CLAIM and npub == cover.get("arbiter_npub"):
                 raise ValueError("The arbiter cannot also do the work.")
+            if action is Action.CLAIM and npub == cover.get("inspector_npub"):
+                raise ValueError("The inspector cannot also do the work.")
             if action is Action.MARK_DONE and cover.get("arbiter_npub") and not signed.get("arbiter"):
                 raise ValueError("The arbiter has not signed this offer yet.")
+            if action is Action.MARK_DONE and cover.get("inspector_npub") and not signed.get("inspector"):
+                raise ValueError("The inspector has not signed this offer yet.")
             held = (task.get("escrow") or {}).get("state", "")
             if action is Action.MARK_DONE and cover.get("escrow") and held not in FUNDED_STATES:
                 raise ValueError("The Balance is not in escrow yet. The purchaser funds it with "
@@ -1192,6 +1217,17 @@ class TaskStore:
                 "ON CONFLICT (task_id, npub, role) DO NOTHING",
                 [task_id, data["tie_breaker"], Role.TIE_BREAKER.value],
             )
+        if (data.get("cover") or {}).get("inspector_npub") != (task.get("cover") or {}).get("inspector_npub"):
+            await self._neon._execute(
+                f"DELETE FROM {self._t('taskbooth_people')} WHERE task_id = $1 AND role = $2",
+                [task_id, Role.INSPECTOR.value],
+            )
+            for npub, role in self._inspector_row(data):
+                await self._neon._execute(
+                    f"INSERT INTO {self._t('taskbooth_people')} (task_id, npub, role) VALUES ($1, $2, $3) "
+                    "ON CONFLICT (task_id, npub, role) DO NOTHING",
+                    [task_id, npub, role.value],
+                )
         if "audience" in changes:
             await self._neon._execute(
                 f"DELETE FROM {self._t('taskbooth_people')} WHERE task_id = $1 AND role = $2",
@@ -1274,7 +1310,8 @@ class TaskStore:
             raise NotYours(f"No task {task_id!r} is yours to see.")
         signed = task.get("agreement") or {}
         return {"statement": offer_statement(task), "statement_hash": offer_hash(task),
-                "signatures": {role: signed[role] for role in ("purchaser", "performer", "arbiter") if signed.get(role)}}
+                "signatures": {role: signed[role] for role in ("purchaser", "performer", "arbiter", "inspector")
+                               if signed.get(role)}}
 
     async def sign(self, npub: str, task_id: str, record: dict[str, Any], *, operator_npub: str,
                    at: int | None = None) -> dict[str, Any]:
@@ -1293,6 +1330,8 @@ class TaskStore:
         step(Standing(State(task["state"]), task["final"]), Action.SIGN, roles)
         if Role.ARBITER in roles:
             role = "arbiter"
+        elif Role.INSPECTOR in roles:
+            role = "inspector"
         else:
             role = "purchaser" if task["state"] == State.POSTED else "performer"
         digest = offer_hash(task)
@@ -1304,6 +1343,59 @@ class TaskStore:
         await self._bump(task, data, at, npub, Action.SIGN,
                          {"role": role, "statement_hash": digest, "method": record.get("method", "")})
         return await self.get(npub, task_id, at)
+
+    async def inspection_task(self, npub: str, task_id: str, verdict: Any, reasons: Any) -> tuple[dict[str, Any], str, str]:
+        """The task ``npub`` inspects, and the verdict and reasons checked, ready to be signed.
+
+        Raises:
+            NotYours: ``npub`` is not this job's inspector.
+            ValueError: the work is not delivered, it already has an opinion, or the opinion is malformed.
+        """
+        task = await self._load(task_id)
+        roles = self._roles(task, npub) if task else frozenset()
+        if task is None or Role.INSPECTOR not in roles:
+            raise NotYours(f"No task {task_id!r} names you its inspector.")
+        if task["state"] not in INSPECTABLE or not task.get("accomplished_at"):
+            raise ValueError("The work has not been delivered, so there is nothing to inspect yet.")
+        if task.get("inspection"):
+            raise ValueError("This job already has the inspector's opinion, and it stands as signed.")
+        if verdict not in VERDICTS:
+            raise ValueError(f"The verdict is one of: {', '.join(VERDICTS)}.")
+        return task, str(verdict), _text(reasons, "reasons", MAX_OPINION, required=True)
+
+    async def inspect(self, npub: str, task_id: str, verdict: Any, reasons: Any, record: dict[str, Any], *,
+                      operator_npub: str, at: int | None = None) -> dict[str, Any]:
+        """Keep the inspector's signed opinion of the finished work (terms 8). It moves nothing.
+
+        The record must verify, be ``npub``'s, and be over this opinion of this offer.
+        """
+        from tollbooth.tools.signature import verify_signature_record
+
+        at = int(time.time()) if at is None else at
+        task, verdict, reasons = await self.inspection_task(npub, task_id, verdict, reasons)
+        digest = inspection_hash(task, verdict, reasons)
+        why = verify_signature_record(record, statement_hash=digest, signer_npub=npub, operator_npub=operator_npub)
+        if why is not None:
+            raise ValueError(f"That signature does not stand: {why}. Sign this verdict and these reasons again.")
+        data = {k: task[k] for k in self._sealed_keys(task)}
+        data["inspection"] = {"verdict": verdict, "reasons": reasons, "at": at, "inspector": npub,
+                              "statement_hash": digest, "method": record.get("method", ""), "record": record}
+        await self._bump(task, data, at, npub, Action.INSPECT, {"verdict": verdict, "statement_hash": digest})
+        return await self.get(npub, task_id, at)
+
+    async def reputation(self, of: str, at: int | None = None) -> dict[str, Any]:
+        """What ``of`` has done in each role on commissions: counts only, nothing about any one job."""
+        at = int(time.time()) if at is None else at
+        of = checked_npub(of, "npub")
+        rows = await self._rows(
+            f"SELECT {_TASK_COLUMNS} FROM {self._t('taskbooth_tasks')} WHERE purchaser_npub = $1 "
+            f"OR performer_npub = $1 OR task_id IN "
+            f"(SELECT task_id FROM {self._t('taskbooth_people')} WHERE npub = $1)",
+            [of],
+        )
+        tasks = [self._task(r) for r in rows]
+        failures = {t["task_id"]: self._failure_view(t, at) for t in tasks}
+        return reputation_of(tasks, of, failures)
 
     # -- escrow ----------------------------------------------------------------
 

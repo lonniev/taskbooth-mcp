@@ -1,0 +1,2 @@
+- An **inspector** a cover page may name (`inspector_npub`): they sign the offer like the arbiter, and once the work is delivered give one signed, advisory opinion of it — verified, concerns or not verified — with `inspect_task`, or by DM with `request_inspection_signature` and `receive_inspection_signature`. It grades nothing and holds no escrow key. Standard Terms v1 gains 1.7 and 8.6–8.10.
+- `reputation(of_npub)`: what any npub did on commissions as client, artist, arbiter and inspector, as counts only. Chores without a cover page do not count.

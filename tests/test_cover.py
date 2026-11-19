@@ -39,7 +39,7 @@ def test_each_version_of_the_terms_is_pinned_by_its_hash():
     # This pin fails on any edit, so each edit is deliberate.
     assert terms.terms_hash("v0") == hashlib.sha256(terms.text("v0").encode()).hexdigest()
     assert terms.terms_hash("v0") == "39f1a595bfe991b897f76b51d877a5cb8e864c942ee6f181ec48c835881534dc"
-    assert terms.terms_hash("v1") == "6f41fcd26fb7c763982719193dc388ee4f41f33759252c7a39bcf5c6757d3e66"
+    assert terms.terms_hash("v1") == "9839018425cfa7172ed7519aec79ce6a1b5acb7e93d215af6f2c3e780bdaf7c0"
     assert terms.text() == terms.text(terms.CURRENT)
     with pytest.raises(ValueError, match="no version"):
         terms.text("v9")

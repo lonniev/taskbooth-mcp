@@ -42,6 +42,7 @@ from tollbooth.tool_identity import (
 )
 
 from taskbooth_mcp import __version__, escrow, feed, payout, price, terms
+from taskbooth_mcp.agreement import inspection_hash, inspection_statement
 from taskbooth_mcp.lifecycle import Action, State
 from taskbooth_mcp.store import NotYours, TaskStore
 
@@ -95,6 +96,12 @@ mcp = FastMCP(
         "its own key calls taskbooth_sign_offer as a signed request; anyone else calls "
         "taskbooth_request_offer_signature, replies to the DM, then calls "
         "taskbooth_receive_offer_signature.\n\n"
+        "A cover page may name an inspector (inspector_npub), who signs the offer like an "
+        "arbiter and, once the work is delivered, gives one signed opinion of it: "
+        "taskbooth_inspect_task, or taskbooth_request_inspection_signature then "
+        "taskbooth_receive_inspection_signature. The opinion is advice only; it grades "
+        "nothing and holds no escrow key. taskbooth_reputation counts what any npub did on "
+        "commissions as client, artist, arbiter and inspector.\n\n"
         "taskbooth_calendar_publish mints a calendar feed of your tasks for a phone's "
         "calendar app; taskbooth_calendar_list and taskbooth_calendar_revoke manage it.\n\n"
         "taskbooth_list_tasks shows every task you have a part in; taskbooth_get_task "
@@ -166,6 +173,10 @@ ESCROW_STATUS_UUID = "cc34e815-f5cb-4690-8c0e-56928aa3844c"
 ESCROW_PROPOSE_UUID = "d69f5474-42e1-4899-b77e-de6bf4bb3491"
 ESCROW_COLLECT_UUID = "a308862f-7b58-499d-80b1-f3ab68295a47"
 ESCROW_SIGN_UUID = "2ea31626-27a0-44c4-b07c-b11faf20925e"
+INSPECT_TASK_UUID = "7d03afcd-e04e-40e7-ae3f-f97a7f482c0c"
+REQUEST_INSPECTION_SIGNATURE_UUID = "4c4551ca-d4e5-4d8d-b842-f6e4c40ec3ef"
+RECEIVE_INSPECTION_SIGNATURE_UUID = "405dcda0-e7c9-4d6d-92ff-e475acb2856d"
+REPUTATION_UUID = "035bf3fd-c12b-4bfc-91df-0f52133b8729"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -221,6 +232,16 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "The Lightning invoice that pays a task's milestone once it falls due"),
     _identity(CONFIRM_MILESTONE_UUID, "confirm_milestone", "write", "Confirm a milestone", WRITES,
               "Say the sats for a task's milestone arrived"),
+    _identity(INSPECT_TASK_UUID, "inspect_task", "write", "Give the inspector's opinion", WRITES,
+              "Sign the inspector's opinion of a job's finished work with your own key"),
+    _identity(REQUEST_INSPECTION_SIGNATURE_UUID, "request_inspection_signature", "write",
+              "Ask to sign the inspector's opinion by DM", WRITES_REMOTE,
+              "Have the inspector's opinion sent as a Nostr DM, to sign by replying"),
+    _identity(RECEIVE_INSPECTION_SIGNATURE_UUID, "receive_inspection_signature", "write",
+              "Keep the inspector's signed opinion", WRITES_REMOTE,
+              "Collect the signed reply to the opinion DM and keep it as the inspector's opinion"),
+    _identity(REPUTATION_UUID, "reputation", "free", "An npub's reputation", READS,
+              "Counts of what an npub did on commissions as client, artist, arbiter and inspector"),
     _identity(STANDARD_TERMS_UUID, "standard_terms", "free", "The Standard Terms", READS,
               "The Standard Terms a cover page puts a job under, with the hash a signature covers"),
     _identity(OFFER_TERMS_UUID, "offer_terms", "read", "Read the offer to sign", READS,
@@ -752,6 +773,101 @@ async def decide_cause(task_id: str, ruling: str, reasons: str = "", npub: Patro
         reasons: Why.
     """
     return await _move(npub, task_id, Action.DECIDE_CAUSE, ruling=ruling, reasons=reasons)
+
+
+@tool
+@runtime.paid_tool(INSPECT_TASK_UUID)
+async def inspect_task(task_id: str, verdict: str, reasons: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Give your opinion of a job's finished work, as its named inspector, signed with your own key (terms 8).
+
+    The opinion is advisory: it grades nothing, decides no appeal and moves no escrow,
+    but everyone on the job sees it and the arbiter may weigh it. One per job, and it
+    stands as signed. The NIP-98 request you sign carries the opinion's statement_hash,
+    taken from taskbooth_request_inspection_signature or computed the same way. Without
+    your own key, use taskbooth_request_inspection_signature instead.
+
+    Args:
+        task_id: A delivered job that names you as inspector.
+        verdict: "verified", "concerns" or "not_verified".
+        reasons: What you found, in up to 2,000 characters.
+    """
+    from tollbooth.tools.signature import signed_request_record
+
+    me = runtime.resolve_npub(npub)
+    db = await store()
+    task, verdict, reasons = await _do(db.inspection_task(me, str(task_id), verdict, reasons))
+    record = signed_request_record(inspection_hash(task, verdict, reasons))
+    if record is None or record["signer"] != me:
+        raise ValueError(
+            "This call is not signed with your own key over this opinion, so it cannot stand as your signature. "
+            "Call taskbooth_request_inspection_signature to sign by replying to a DM instead."
+        )
+    task = await _do(db.inspect(me, str(task_id), verdict, reasons, record, operator_npub=runtime.operator_npub()))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(REQUEST_INSPECTION_SIGNATURE_UUID)
+async def request_inspection_signature(
+    task_id: str, verdict: str, reasons: str, npub: PatronNpub = ""
+) -> dict[str, Any]:
+    """Have your opinion of a job's finished work sent to you as a Nostr DM, to sign by replying (terms 8).
+
+    After calling this, STOP and wait until you have replied to the DM from your Nostr
+    client. Then call taskbooth_receive_inspection_signature once, with the same verdict
+    and reasons and the nonce and statement_hash returned here.
+
+    Args:
+        task_id: A delivered job that names you as inspector.
+        verdict: "verified", "concerns" or "not_verified".
+        reasons: What you found, in up to 2,000 characters.
+    """
+    me = runtime.resolve_npub(npub)
+    db = await store()
+    task, verdict, reasons = await _do(db.inspection_task(me, str(task_id), verdict, reasons))
+    sent = await runtime.request_signature(me, inspection_statement(task, verdict, reasons))
+    if not sent.get("success"):
+        raise ValueError(sent.get("error") or "The signature request could not be sent.")
+    return {"ok": True, "nonce": sent["nonce"], "statement_hash": sent["statement_hash"],
+            "rendezvous_relay": sent.get("rendezvous_relay", ""), "message": sent.get("message", "")}
+
+
+@tool
+@runtime.paid_tool(RECEIVE_INSPECTION_SIGNATURE_UUID)
+async def receive_inspection_signature(
+    task_id: str, verdict: str, reasons: str, nonce: str, statement_hash: str, npub: PatronNpub = "",
+) -> dict[str, Any]:
+    """Collect your signed reply to the opinion DM and keep it as the inspector's opinion. Call once.
+
+    Args:
+        task_id: The job.
+        verdict: The verdict you asked to sign.
+        reasons: The reasons you asked to sign, exactly as sent.
+        nonce: The nonce taskbooth_request_inspection_signature returned.
+        statement_hash: The statement_hash it returned.
+    """
+    me = runtime.resolve_npub(npub)
+    got = await runtime.receive_signature(me, str(nonce), str(statement_hash))
+    if not got.get("success"):
+        raise ValueError(got.get("error") or "No signed reply was found.")
+    db = await store()
+    task = await _do(db.inspect(me, str(task_id), verdict, reasons, got["signature"],
+                                operator_npub=runtime.operator_npub()))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(REPUTATION_UUID)
+async def reputation(of_npub: str) -> dict[str, Any]:
+    """What an npub has done on commissions, as client, artist, arbiter and inspector: counts only.
+
+    Only jobs under the Standard Terms count. Nothing names a job, its title or its sats.
+
+    Args:
+        of_npub: Whose reputation.
+    """
+    db = await store()
+    return {"ok": True, **await _do(db.reputation(str(of_npub)))}
 
 
 @tool

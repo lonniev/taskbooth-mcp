@@ -55,7 +55,7 @@ async def test_an_edit_changes_the_offer_and_clears_the_purchasers_signature(que
     _, db = queue
     task = await _job(db, family)
     signed = await agree(db, keys["parent"], task)
-    assert signed["agreement"] == {"purchaser_signed": True, "performer_signed": False, "arbiter_signed": False}
+    assert signed["agreement"] == {"purchaser_signed": True, "performer_signed": False, "arbiter_signed": False, "inspector_signed": False}
     before = (await db.offer(family["parent"], task))["statement_hash"]
     edited = await db.edit(family["parent"], task, {"deposit_pct": 5}, at=NOW + 5)
     assert edited["agreement"]["purchaser_signed"] is False
@@ -84,7 +84,7 @@ async def test_the_performer_signs_before_marking_the_work_done(queue, family, k
     with pytest.raises(ValueError, match="Sign the offer first"):
         await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 20)
     both = await agree(db, keys["child"], task)
-    assert both["agreement"] == {"purchaser_signed": True, "performer_signed": True, "arbiter_signed": False}
+    assert both["agreement"] == {"purchaser_signed": True, "performer_signed": True, "arbiter_signed": False, "inspector_signed": False}
     assert (await db.act(family["child"], task, Action.MARK_DONE, at=NOW + 20))["state"] == "done"
     kept = (await db.offer(family["parent"], task))["signatures"]
     assert kept["purchaser"]["signer"] == family["parent"] and kept["performer"]["signer"] == family["child"]
@@ -98,7 +98,7 @@ async def test_a_released_performers_signature_goes_and_the_purchasers_stays(que
     await db.act(family["child"], task, Action.CLAIM, at=NOW + 10)
     await agree(db, keys["child"], task)
     back = await db.act(family["parent"], task, Action.RELEASE, at=NOW + 20)
-    assert back["agreement"] == {"purchaser_signed": True, "performer_signed": False, "arbiter_signed": False}
+    assert back["agreement"] == {"purchaser_signed": True, "performer_signed": False, "arbiter_signed": False, "inspector_signed": False}
     await db.act(family["sibling"], task, Action.CLAIM, at=NOW + 30)
     with pytest.raises(ValueError, match="Sign the offer first"):
         await db.act(family["sibling"], task, Action.MARK_DONE, at=NOW + 40)
