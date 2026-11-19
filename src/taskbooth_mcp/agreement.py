@@ -20,7 +20,10 @@ from typing import Any
 
 from tollbooth.tools.signature import normalized_statement, statement_hash
 
-__all__ = ["offer_hash", "offer_statement"]
+__all__ = ["VERDICTS", "inspection_hash", "inspection_statement", "offer_hash", "offer_statement"]
+
+#: What an inspector may find of the finished work (terms 8).
+VERDICTS = ("verified", "concerns", "not_verified")
 
 
 def _when(seconds: int) -> str:
@@ -60,6 +63,8 @@ def offer_statement(task: dict[str, Any]) -> str:
             lines.append(f"Spec sha256: {cover['spec_hash']}")
         if cover.get("arbiter_npub"):
             lines.append(f"Arbiter: {cover['arbiter_npub']}")
+        if cover.get("inspector_npub"):
+            lines.append(f"Inspector: {cover['inspector_npub']}")
         if cover.get("escrow"):
             refund_at = int(task["needed_by"]) + int(cover["refund_days"]) * 86400
             lines.append(f"Escrow: the Balance held at {cover['escrow_mint']}, refundable to the purchaser "
@@ -79,3 +84,23 @@ def _late(rule: dict[str, Any]) -> str:
 def offer_hash(task: dict[str, Any]) -> str:
     """What both signatures are over."""
     return statement_hash(offer_statement(task))
+
+
+def inspection_statement(task: dict[str, Any], verdict: str, reasons: str) -> str:
+    """The inspector's opinion of the finished work, as they read and sign it.
+
+    It names the offer it is about by hash, so the opinion cannot be moved to another job.
+    """
+    return normalized_statement("\n".join([
+        f"Task Booth inspection of {task['task_id']}",
+        f"Offer sha256: {offer_hash(task)}",
+        f"Inspector: {task['cover']['inspector_npub']}",
+        f"Delivered: {_when(task['accomplished_at'])}",
+        f"Verdict: {verdict}",
+        f"Reasons: {reasons}",
+    ]))
+
+
+def inspection_hash(task: dict[str, Any], verdict: str, reasons: str) -> str:
+    """What the inspector's signature is over."""
+    return statement_hash(inspection_statement(task, verdict, reasons))

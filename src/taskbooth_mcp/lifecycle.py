@@ -48,6 +48,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 __all__ = [
+    "APPEAL_DAYS",
+    "ARBITER_DAYS",
     "EXPIRED",
     "LATE_KINDS",
     "MAX_DEPOSIT_PCT",
@@ -85,6 +87,11 @@ class State(StrEnum):
 EXPIRED = "expired"
 
 
+#: Days the Standard Terms give an appeal or a claim of cause (4.6, 14.7), and the arbiter to decide it.
+APPEAL_DAYS = 7
+ARBITER_DAYS = 7
+
+
 class Role(StrEnum):
     PURCHASER = "purchaser"      # posted the task
     AUDIENCE = "audience"        # may see it and claim it
@@ -94,6 +101,7 @@ class Role(StrEnum):
     OPERATOR = "operator"        # this service: recording a proved payment, closing a missed task
     MEMBER = "member"            # in the Organization the task is filed under: sees it, moves nothing
     ARBITER = "arbiter"          # named on the cover page: signs the offer, decides appeals, holds an escrow key
+    INSPECTOR = "inspector"      # named on the cover page: signs the offer, gives one signed opinion of the work
 
 
 class Action(StrEnum):
@@ -111,6 +119,8 @@ class Action(StrEnum):
     MISS = "miss"
     CLAIM_CAUSE = "claim_cause"
     DECIDE_CAUSE = "decide_cause"
+    # The inspector's opinion changes no state; it is checked where it is kept.
+    INSPECT = "inspect"
     EDIT = "edit"
     NUDGE_PAY = "nudge_pay"
     NUDGE_DUE = "nudge_due"
@@ -194,9 +204,9 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.CLAIMED, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
     (State.DONE, Action.CONFIRM_MILESTONE): frozenset({Role.PERFORMER}),
     # The purchaser signs the offer while it is open; the performer signs the same offer once claimed.
-    # A named arbiter signs it too, before or after the claim.
-    (State.POSTED, Action.SIGN): frozenset({Role.PURCHASER, Role.ARBITER}),
-    (State.CLAIMED, Action.SIGN): frozenset({Role.PERFORMER, Role.ARBITER}),
+    # A named arbiter or inspector signs it too, before or after the claim.
+    (State.POSTED, Action.SIGN): frozenset({Role.PURCHASER, Role.ARBITER, Role.INSPECTOR}),
+    (State.CLAIMED, Action.SIGN): frozenset({Role.PERFORMER, Role.ARBITER, Role.INSPECTOR}),
 }
 
 

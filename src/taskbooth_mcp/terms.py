@@ -1,6 +1,6 @@
 """The Task Booth Standard Terms, each version fixed by the hash of its text.
 
-v0 was published under the working name MakerMarket; v1 adds Cashu escrow and the arbiter's signature.
+v0 was published under the working name MakerMarket; v1 adds Cashu escrow, the arbiter's signature and the inspector.
 
 A job's cover page names the version and hash in force when it was posted, and
 that version never changes for the job (section 2.5). A new version is a new
@@ -150,6 +150,7 @@ Task Booth Standard Terms, version v1
 1.4 "Platform" is the Task Booth software and its operator, and any site built on it.
 1.5 The Platform is not a party to any job contract.
 1.6 "Mint" is the Cashu mint named on the Cover Page of a job held in escrow.
+1.7 "Inspector" is an independent third party named on the Cover Page, if any, who gives an opinion of the finished work.
 
 2. How a job contract forms
 2.1 The Client posts a job with a draft Cover Page and a specification ("Spec").
@@ -215,12 +216,17 @@ Task Booth Standard Terms, version v1
 7.2 The Client pays it within 7 days.
 7.3 An unpaid Balance is a debt the Client owes the Worker.
 
-8. Arbiter
+8. Arbiter and Inspector
 8.1 The Client names the Arbiter on the Cover Page, and the Worker accepts the Arbiter by claiming the job and signing.
 8.2 Any fee the Arbiter charges is agreed with the Arbiter, and the Cover Page or that agreement says who pays it.
 8.3 The Arbiter decides appeals, and disputes over a job held in escrow.
 8.4 The Arbiter signs escrow releases only as the Arbiter decided, or as section 6.11 provides.
 8.5 The Arbiter does not act for either party, and is not a party to the job contract.
+8.6 The Client may name an Inspector on the Cover Page, and the Inspector signs the same Cover Page as the parties.
+8.7 After delivery, the Inspector may give one opinion of the finished work, signed with the Inspector's Nostr key.
+8.8 The opinion is advice: it does not grade the work, decide an appeal, or hold or release escrow.
+8.9 The Arbiter may take the opinion into account when deciding an appeal or a claim of cause.
+8.10 The Inspector does not act for either party, is not a party to the job contract, and is paid only as agreed with the Inspector.
 
 9. Ownership and licence
 9.1 When the Client has paid the award in full, the Worker assigns the deliverables to the Client, unless the Cover Page names a different IP option.
