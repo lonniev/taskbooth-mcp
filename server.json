@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.lonniev/taskbooth-mcp",
   "description": "Task Booth — work posted with a signed rubric and paid in sats after it is graded, wallet to wallet",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "repository": {
     "url": "https://github.com/lonniev/taskbooth-mcp",
     "source": "github"
