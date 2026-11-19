@@ -1177,6 +1177,33 @@ class TaskStore:
             task["task_id"], task["version"] + 1, at, actor, action.value, task["state"], task["state"], detail
         )
 
+    async def file(self, purchaser: str, task_id: str, org_id: Any, project_id: Any,
+                   at: int | None = None) -> dict[str, Any]:
+        """Move a task into a Project, or from one Project to another. Only the purchaser may.
+
+        Where a task is filed is no term of it: the offer names no Project, so signatures stand,
+        and the Project's default terms, which only start a new task, are not compared.
+        """
+        at = int(time.time()) if at is None else at
+        task = await self._load(task_id)
+        if task is None or task["purchaser"] != purchaser:
+            raise NotYours(f"No task {task_id!r} is yours to move.")
+        org_id, project_id = await self._filing(purchaser, org_id, project_id)
+        if not project_id:
+            raise ValueError("Name the Project to move it into: its org_id and project_id.")
+        if (org_id, project_id) == (task["org_id"], task["project_id"]):
+            return await self.get(purchaser, task_id, at)
+        moved = await self._rows(
+            f"UPDATE {self._t('taskbooth_tasks')} SET org_id = $1, project_id = $2, version = version + 1, "
+            "updated_at = $3 WHERE task_id = $4 AND version = $5 RETURNING version",
+            [org_id, project_id, at, task_id, task["version"]],
+        )
+        if not moved:
+            raise ValueError("Someone else changed this task first. Read it again.")
+        await self._record(task_id, task["version"] + 1, at, purchaser, Action.FILE.value, task["state"],
+                           task["state"], {"from_project": task["project_id"], "project_id": project_id})
+        return await self.get(purchaser, task_id, at)
+
     async def edit(
         self, purchaser: str, task_id: str, changes: dict[str, Any], signature: str = "",
         escrow_mints: tuple[str, ...] = (), at: int | None = None,

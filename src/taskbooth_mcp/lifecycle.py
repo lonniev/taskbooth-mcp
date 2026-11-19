@@ -131,6 +131,8 @@ class Action(StrEnum):
     DECIDE_CAUSE = "decide_cause"
     # The inspector's opinion changes no state; it is checked where it is kept.
     INSPECT = "inspect"
+    # Filing a task in a Project changes no state or term; it is checked where it is kept.
+    FILE = "file"
     EDIT = "edit"
     NUDGE_PAY = "nudge_pay"
     NUDGE_DUE = "nudge_due"
