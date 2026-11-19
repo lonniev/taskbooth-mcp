@@ -174,8 +174,8 @@ Task Booth Standard Terms, version v1
 4.3 Each grade pays the amount the rubric sets for it, in sats.
 4.4 The Client must grade within the deemed-acceptance period on the Cover Page.
 4.5 If the Client does not grade in time, the delivery is treated as graded at the deemed grade on the Cover Page.
-4.6 The Worker may appeal a grade once, within 7 days of the grade.
-4.7 If an Arbiter is named, the Arbiter decides the appeal.
+4.6 The Worker may appeal a grade once, within the appeal window on the Cover Page, counted from the grade.
+4.7 If an Arbiter is named, the Arbiter decides the appeal within the ruling time on the Cover Page.
 4.8 If no Arbiter is named, the tie-breaker the Client named decides the appeal, and that grade settles the payment for that job.
 4.9 A grade settles payment only, and neither party gives up any other legal right by accepting it.
 4.10 The Cover Page may set late steps. Once a delivery is later than a step's hours past the delivery date, that step's percentage comes off the amount the grade awards, and the last such step applies.
@@ -213,7 +213,7 @@ Task Booth Standard Terms, version v1
 
 7. Lightning-only jobs
 7.1 After grading, the Worker issues a Lightning invoice for the Balance.
-7.2 The Client pays it within 7 days.
+7.2 The Client pays it within the payment window on the Cover Page.
 7.3 An unpaid Balance is a debt the Client owes the Worker.
 
 8. Arbiter and Inspector
@@ -266,7 +266,7 @@ Task Booth Standard Terms, version v1
 14.5 After delivery, the job ends only through grading.
 14.6 A job held in escrow that ends without grading is settled by a split signed under section 6.5, or by the Client taking back the escrow under section 6.6.
 14.7 If the work is still not delivered when it is later than the failure point on the Cover Page, the job ends for failure to deliver.
-14.8 Within 7 days of the failure, the Worker may claim cause once, with reasons, such as the Client not supplying what section 3.3 requires. The Arbiter decides the claim within 7 days. If no Arbiter is named, no claim is made in time, or the Arbiter rejects the claim, the failure is without cause.
+14.8 Within the appeal window on the Cover Page, counted from the failure, the Worker may claim cause once, with reasons, such as the Client not supplying what section 3.3 requires. The Arbiter decides the claim within the ruling time on the Cover Page. If no Arbiter is named, no claim is made in time, or the Arbiter rejects the claim, the failure is without cause.
 14.9 After a failure without cause, payments already made stay where they are. The Platform does not move them back, and any claim to them is under section 15.
 14.10 After a failure without cause, for a job held in escrow, the Arbiter signs with the Client to release the whole escrow to the Client.
 14.11 After a failure without cause, every deliverable, draft and material the Worker handed to the Client before the end becomes the Client's property, despite sections 9.1, 9.2 and 9.5.

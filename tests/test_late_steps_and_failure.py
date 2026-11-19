@@ -169,7 +169,7 @@ async def test_no_claim_within_seven_days_means_no_cause(queue, family, keys):
     task, failed_at = await _failed(db, family, keys)
     assert (await db.get(family["parent"], task, at=failed_at + 7 * DAY))["failure"]["without_cause"] is None
     assert (await db.get(family["parent"], task, at=failed_at + 7 * DAY + 1))["failure"]["without_cause"] is True
-    with pytest.raises(ValueError, match="days to claim cause have passed"):
+    with pytest.raises(ValueError, match="window to claim cause has closed"):
         await db.act(family["child"], task, Action.CLAIM_CAUSE, reasons="late", at=failed_at + 7 * DAY + 1)
 
 

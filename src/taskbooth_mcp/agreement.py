@@ -20,6 +20,8 @@ from typing import Any
 
 from tollbooth.tools.signature import normalized_statement, statement_hash
 
+from taskbooth_mcp.lifecycle import window_hours
+
 __all__ = ["VERDICTS", "inspection_hash", "inspection_statement", "offer_hash", "offer_statement"]
 
 #: What an inspector may find of the finished work (terms 8).
@@ -59,6 +61,9 @@ def offer_statement(task: dict[str, Any]) -> str:
     cover = task.get("cover")
     if cover:
         lines.append(f"Standard Terms: {cover['terms_version']} sha256 {cover['terms_hash']}")
+        lines.append(f"Appeal window: {window_hours(cover, 'appeal_hours')} hours")
+        lines.append(f"Arbiter's ruling time: {window_hours(cover, 'ruling_hours')} hours")
+        lines.append(f"Payment window: {window_hours(cover, 'pay_hours')} hours")
         if cover.get("spec_hash"):
             lines.append(f"Spec sha256: {cover['spec_hash']}")
         if cover.get("arbiter_npub"):

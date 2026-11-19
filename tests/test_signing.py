@@ -9,7 +9,7 @@ from taskbooth_mcp.agreement import offer_hash, offer_statement
 from taskbooth_mcp.lifecycle import Action
 from tests.signing import OPERATOR, OPERATOR_NPUB, agree, dm_signature
 from tests.test_store import DAY, NOW, _post, queue  # noqa: F401 — fixtures
-from tests.test_tools import billing, call  # noqa: F401 — fixtures
+from tests.test_tools import billing, call, filed  # noqa: F401 — fixtures
 from tests.test_tools import queue as tool_queue  # noqa: F401 — fixture under its own name
 
 COVER = {"deliverables": ["fr.ts"], "spec_hash": "ab" * 32}
@@ -157,7 +157,8 @@ async def test_a_dm_signature_is_asked_for_then_collected(billing, tool_queue, m
     monkeypatch.setattr(server.runtime, "operator_npub", lambda: OPERATOR_NPUB)
 
     posted = await call("post_task", title="Translate Welcome", rubric={"grades": [{"name": "Done", "sats": 900}]},
-                        audience=[keys["child"].public_key.bech32()], needed_by=2**40, cover=COVER, npub=parent)
+                        audience=[keys["child"].public_key.bech32()], needed_by=2**40, cover=COVER, npub=parent,
+                        **await filed(parent))
     task = posted["task"]["task_id"]
     read = await call("offer_terms", task_id=task, npub=parent)
     sent = await call("request_offer_signature", task_id=task, npub=parent)
@@ -172,7 +173,7 @@ async def test_an_unsigned_call_cannot_stand_as_a_signature(billing, tool_queue,
     parent = keys["parent"].public_key.bech32()
     billing["proven"].add(parent)
     posted = await call("post_task", title="x", rubric={"grades": [{"name": "Done", "sats": 9}]},
-                        audience=[parent], needed_by=2**40, cover=COVER, npub=parent)
+                        audience=[parent], needed_by=2**40, cover=COVER, npub=parent, **await filed(parent))
     read = await call("offer_terms", task_id=posted["task"]["task_id"], npub=parent)
     refused = await call("sign_offer", task_id=posted["task"]["task_id"], statement_hash=read["statement_hash"],
                          npub=parent)
