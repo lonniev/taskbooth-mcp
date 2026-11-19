@@ -130,6 +130,8 @@ REJECT_TASK_UUID = "47245915-a9f0-408a-9ac9-172620b66e67"
 ACCEPT_ASSESSMENT_UUID = "14ccb2e9-08c9-4412-8f73-8a093a71f917"
 APPEAL_ASSESSMENT_UUID = "2e7bc8c7-d50a-47c0-9d6f-8fbc282c19f9"
 DECIDE_APPEAL_UUID = "6d1ca911-8ca3-4cf2-9474-089256a3fba7"
+CLAIM_CAUSE_UUID = "b4c94c22-ed97-49ff-9fcf-eb46e54a59dd"
+DECIDE_CAUSE_UUID = "48463091-f4d3-43ba-a0d2-220d93247eb0"
 DELEGATE_ASSESSOR_UUID = "fbb5abdb-95dc-4a05-b816-7239271db34c"
 REQUEST_PAYOUT_UUID = "5969f5f9-ed64-4b15-ad4a-015d8192b960"
 CONFIRM_PAID_UUID = "fc620f48-1061-41ff-8d73-8fb41d627617"
@@ -203,6 +205,10 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Ask the rubric's tie-breaker to look at the grade, once"),
     _identity(DECIDE_APPEAL_UUID, "decide_appeal", "write", "Decide an appeal", WRITES,
               "Settle an appeal with a final grade"),
+    _identity(CLAIM_CAUSE_UUID, "claim_cause", "write", "Claim cause for a failure to deliver", WRITES,
+              "Say why the work could not be delivered, once, for the arbiter to rule on"),
+    _identity(DECIDE_CAUSE_UUID, "decide_cause", "write", "Rule on a claim of cause", WRITES,
+              "Uphold or reject a performer's claim of cause, as the arbiter"),
     _identity(DELEGATE_ASSESSOR_UUID, "delegate_assessor", "write", "Delegate an assessor", WRITES,
               "Let another npub grade a task for the purchaser"),
     _identity(REQUEST_PAYOUT_UUID, "request_payout", "write", "Request the payout invoice", WRITES_REMOTE,
@@ -434,7 +440,10 @@ async def post_task(
         signature: Your signature on the offer, when your client makes one.
         late: What happens if it is done after needed_by. {"kind": "full"} pays in full (the default);
             {"kind": "discount", "pct_per_day": 10} takes 10% off the grade for each day late, never
-            below zero; {"kind": "cancel"} closes it as missed once needed_by passes undone.
+            below zero; {"kind": "steps", "steps": [{"after_hours": 0, "pct_off": 10},
+            {"after_hours": 72, "pct_off": 25}]} takes off the last step's percentage the work is more than
+            after_hours late (both rising, up to 6 steps); {"kind": "cancel"} closes it as missed once
+            needed_by passes undone.
         deposit_pct: The share of the top grade, 0 to 90 percent, paid to the performer when they
             claim it. The award later pays only what the grade earns beyond it. 0 asks for none.
         cover: A job's cover page, which puts it under the Standard Terms (taskbooth_standard_terms):
@@ -443,12 +452,16 @@ async def post_task(
              "ip_option": "assign" | "license" | "worker_keeps" | "custom", "ip_custom_text": "…",
              "confidential": false, "client_is_consumer": false, "third_party_allowed": false,
              "governing_law": "…", "venue": "…",
-             "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 35}.
-            Every field is optional. A named arbiter signs the offer and decides any appeal. Escrow holds the
-            Balance at a mint this Operator offers (taskbooth_get_operator_properties, escrow_mints); it needs
-            an arbiter and a deemed grade. refund_days sets the refund date after the needed-by time, and is at
-            least 21 plus deemed_acceptance_days (7 days' grace, 7 to appeal, 7 for the arbiter), so the
-            purchaser cannot take the escrow back while an appeal is open.
+             "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 35,
+             "fail_after_hours": 168}.
+            Every field is optional. fail_after_hours is the failure point: work still undelivered that many
+            hours past needed_by ends the job for failure to deliver (terms 14.7), and the performer may then
+            claim cause (taskbooth_claim_cause). It comes after the last late step. A named arbiter signs the
+            offer and decides any appeal or claim of cause. Escrow holds the Balance at a mint this Operator
+            offers (taskbooth_get_operator_properties, escrow_mints); it needs an arbiter, a deemed grade and a
+            failure point. refund_days sets the refund date after the needed-by time, and is at least 14 plus
+            deemed_acceptance_days plus the failure point in whole days (7 to appeal, 7 for the arbiter), so
+            the purchaser cannot take the escrow back while an appeal is open.
         milestones: Dated part-payments of the top grade, up to 6:
             [{"name": "Halfway", "due_at": <Unix seconds>, "pct": 45}]. With deposit_pct they ask for
             at most 90%. Each is payable from its date, and the award pays only what is left.
@@ -707,6 +720,38 @@ async def decide_appeal(task_id: str, grade: str, reasons: str = "", npub: Patro
         reasons: Why this grade.
     """
     return await _move(npub, task_id, Action.DECIDE_APPEAL, grade=grade, reasons=reasons)
+
+
+@tool
+@runtime.paid_tool(CLAIM_CAUSE_UUID)
+async def claim_cause(task_id: str, reasons: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Claim cause for a failure to deliver, once, for the arbiter to rule on (terms 14.8).
+
+    A job still undelivered at its failure point ends for failure to deliver. Within 7 days
+    you may say why, such as the client not supplying what the spec promised. Without a
+    claim, or without an arbiter, the failure stands without cause.
+
+    Args:
+        task_id: A job you claimed that failed to deliver.
+        reasons: What the cause was.
+    """
+    return await _move(npub, task_id, Action.CLAIM_CAUSE, reasons=reasons)
+
+
+@tool
+@runtime.paid_tool(DECIDE_CAUSE_UUID)
+async def decide_cause(task_id: str, ruling: str, reasons: str = "", npub: PatronNpub = "") -> dict[str, Any]:
+    """Rule on a performer's claim of cause, as the job's arbiter (terms 14.8).
+
+    Rejected, the failure is without cause: sign with the client to release the whole escrow
+    to the client (terms 14.10). Upheld, you decide how any escrow is shared (terms 14.12).
+
+    Args:
+        task_id: A failed job that names you as arbiter, with a claim of cause.
+        ruling: "upheld" or "rejected".
+        reasons: Why.
+    """
+    return await _move(npub, task_id, Action.DECIDE_CAUSE, ruling=ruling, reasons=reasons)
 
 
 @tool

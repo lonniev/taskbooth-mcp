@@ -44,10 +44,12 @@ from taskbooth_mcp.lifecycle import (
     State,
     days_late,
     deposit_sats,
+    hours_late,
     late_sats,
     next_needed_by,
     standing,
     step,
+    step_sats,
 )
 
 MAX_TITLE = 200
@@ -155,8 +157,29 @@ def checked_rubric(rubric: Any) -> dict[str, Any]:
     return {"grades": checked, "appeal": _text(rubric.get("appeal", ""), "appeal rule", 500)}
 
 
+#: The most late steps a task may set, and the latest hour one may start.
+MAX_LATE_STEPS = 6
+MAX_LATE_HOURS = 365 * 24
+
+
+def checked_late_steps(value: Any) -> list[dict[str, int]]:
+    """Late steps: each a percentage off once the work is more than ``after_hours`` late, both rising."""
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_LATE_STEPS:
+        raise ValueError(f"Late steps are a list of 1 to {MAX_LATE_STEPS}.")
+    steps: list[dict[str, int]] = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"after_hours", "pct_off"}:
+            raise ValueError('Each late step is {"after_hours": <hours late>, "pct_off": <percent>}.')
+        hours = _whole(entry["after_hours"], "hours late a step starts after", most=MAX_LATE_HOURS - 1)
+        pct = _whole(entry["pct_off"], "percent a step takes off", least=1, most=100)
+        if steps and (hours <= steps[-1]["after_hours"] or pct <= steps[-1]["pct_off"]):
+            raise ValueError("Each late step starts later, and takes off more, than the one before.")
+        steps.append({"after_hours": hours, "pct_off": pct})
+    return steps
+
+
 def checked_late(value: Any) -> dict[str, Any]:
-    """What happens when the task is done late: pay in full, a percentage off each day, or cancel."""
+    """What happens when the task is done late: pay in full, a percentage off each day, steps, or cancel."""
     if value is None or value == {}:
         return {"kind": "full"}
     if not isinstance(value, dict) or value.get("kind") not in LATE_KINDS:
@@ -164,6 +187,8 @@ def checked_late(value: Any) -> dict[str, Any]:
     if value["kind"] == "discount":
         return {"kind": "discount", "pct_per_day": _whole(value.get("pct_per_day"), "percent off each day late",
                                                           least=1, most=100)}
+    if value["kind"] == "steps":
+        return {"kind": "steps", "steps": checked_late_steps(value.get("steps"))}
     return {"kind": value["kind"]}
 
 
@@ -171,25 +196,31 @@ def checked_late(value: Any) -> dict[str, Any]:
 IP_OPTIONS = ("assign", "license", "worker_keeps", "custom")
 _COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deemed_acceptance_days", "ip_option",
                  "ip_custom_text", "confidential", "client_is_consumer", "third_party_allowed", "governing_law",
-                 "venue", "arbiter_npub", "escrow", "escrow_mint", "refund_days")
+                 "venue", "arbiter_npub", "escrow", "escrow_mint", "refund_days", "fail_after_hours")
 MAX_DELIVERABLES = 20
 MAX_DEEMED_DAYS = 60
 MAX_REFUND_DAYS = 90
-#: Days the Standard Terms give a late delivery (14.3), an appeal (4.6), and the arbiter to decide it.
-GRACE_DAYS = 7
+#: Days the Standard Terms give an appeal or a claim of cause (4.6, 14.7), and the arbiter to decide it.
 APPEAL_DAYS = 7
 ARBITER_DAYS = 7
 
 
-def least_refund_days(deemed_days: int) -> int:
-    """The shortest refund period that cannot cut an appeal short.
+def fail_days(fail_after_hours: int) -> int:
+    """The failure point in whole days, counting any part of a day as one."""
+    return -(-fail_after_hours // 24)
+
+
+def least_refund_days(deemed_days: int, fail_after_hours: int) -> int:
+    """The shortest refund period that cannot cut an appeal or a claim of cause short.
 
     The client alone may take the escrow back from the refund date (terms 6.6),
     so it must fall after the latest day the arbiter could still be deciding:
-    a delivery on the last day of grace, a grade on the last day of the
+    a delivery just before the failure point, a grade on the last day of the
     deemed-acceptance period, an appeal on its last day, and a week to decide.
+    A failure to deliver needs no more: its claim of cause takes the same week
+    and its ruling the same week, from an earlier day.
     """
-    return GRACE_DAYS + deemed_days + APPEAL_DAYS + ARBITER_DAYS
+    return fail_days(fail_after_hours) + deemed_days + APPEAL_DAYS + ARBITER_DAYS
 MAX_MILESTONES = 6
 
 
@@ -200,13 +231,14 @@ def _flag(value: Any, what: str) -> bool:
 
 
 def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, ...],
-                   deemed_days: int = 0) -> dict[str, Any]:
+                   deemed_days: int = 0, fail_after_hours: int = 0) -> dict[str, Any]:
     """The arbiter and escrow fields of a cover page.
 
     Escrow needs a named arbiter (without one the dates decide and the job stays
     Lightning-only), a deemed grade (a client who never grades must not hold
-    the escrow hostage), a mint this Operator offers, and a refund date late
-    enough that an appeal is settled before it (``least_refund_days``).
+    the escrow hostage), a failure point (a job never delivered must end), a
+    mint this Operator offers, and a refund date late enough that an appeal is
+    settled before it (``least_refund_days``).
     """
     from tollbooth.cashu import checked_mint_url
 
@@ -224,6 +256,9 @@ def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, .
     if not deemed_days:
         raise ValueError("Escrow needs a deemed grade and a deemed-acceptance period, so a silent client "
                          "cannot hold the escrow until the refund date.")
+    if not fail_after_hours:
+        raise ValueError("Escrow needs a failure point (fail_after_hours), so work never delivered ends the job "
+                         "and its escrow can be settled.")
     if not mints:
         raise ValueError("This Operator offers no escrow mint yet.")
     try:
@@ -232,10 +267,11 @@ def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, .
         raise ValueError(f"The escrow mint: {exc}.") from None
     if mint not in mints:
         raise ValueError(f"The escrow mint must be one this Operator offers: {', '.join(mints)}.")
-    least = least_refund_days(deemed_days)
+    least = least_refund_days(deemed_days, fail_after_hours)
     if isinstance(days, int) and not isinstance(days, bool) and 0 < days < least:
         raise ValueError(
-            f"The refund period must be at least {least} days: {GRACE_DAYS} days' grace for a late delivery, "
+            f"The refund period must be at least {least} days: {fail_days(fail_after_hours)} days to the "
+            "failure point, "
             f"the {deemed_days}-day deemed-acceptance period, {APPEAL_DAYS} days to appeal, and {ARBITER_DAYS} "
             "for the arbiter to decide. Before then the client alone could take the escrow back mid-appeal.")
     days = _whole(days, "refund period in days", least=least, most=MAX_REFUND_DAYS)
@@ -278,6 +314,8 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
     if ip not in IP_OPTIONS:
         raise ValueError(f"The IP option is one of: {', '.join(IP_OPTIONS)}.")
     custom = _text(value.get("ip_custom_text", ""), "custom IP terms", MAX_TEXT, required=ip == "custom")
+    # Hours past the needed-by time after which undelivered work is a failure to deliver (terms 14.7); 0 for none.
+    fail = _whole(value.get("fail_after_hours", 0), "failure point in hours late", most=MAX_LATE_HOURS)
 
     return {
         "terms_version": terms.CURRENT,
@@ -294,7 +332,8 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
         "third_party_allowed": _flag(value.get("third_party_allowed", False), "third-party flag"),
         "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
         "venue": _text(value.get("venue", ""), "venue", 200),
-        **checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days),
+        "fail_after_hours": fail,
+        **checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days, fail_after_hours=fail),
     }
 
 
@@ -485,6 +524,11 @@ class TaskStore:
         if task.get("escrow"):
             # Blinding factors and proofs stay here; a viewer sees where the escrow stands.
             view["escrow"] = escrow_summary(task["escrow"], at)
+        view.pop("cause", None)
+        view["failure"] = self._failure_view(task, at)
+        if view["failure"] and view["failure"]["without_cause"] and task.get("escrow"):
+            # Terms 14.10: the arbiter signs with the client to release the whole escrow to the client.
+            view["escrow_due_to"] = "client"
         return view
 
     @staticmethod
@@ -546,18 +590,43 @@ class TaskStore:
 
     @staticmethod
     def _wants_miss(task: dict[str, Any], at: int) -> bool:
-        """A cancel-if-missed task whose deadline passed before it was done."""
-        return bool(
-            (task.get("late") or {}).get("kind") == "cancel"
-            and task["state"] in (State.POSTED, State.CLAIMED)
-            and task["needed_by"] < at
-        )
+        """A cancel-if-missed task whose deadline passed before it was done, or a job still
+        undelivered at its cover page's failure point (terms 14.7)."""
+        if ((task.get("late") or {}).get("kind") == "cancel" and task["state"] in (State.POSTED, State.CLAIMED)
+                and task["needed_by"] < at):
+            return True
+        fail = int((task.get("cover") or {}).get("fail_after_hours") or 0)
+        return bool(fail and task["state"] == State.CLAIMED and task["needed_by"] + fail * 3_600 < at)
+
+    @staticmethod
+    def _failure_view(task: dict[str, Any], at: int) -> dict[str, Any] | None:
+        """Where a failure to deliver stands: when cause may be claimed until, and whether it is without cause.
+
+        ``without_cause`` is ``None`` while a claim may still come or awaits the arbiter's ruling.
+        """
+        failure = task.get("failure")
+        if not failure:
+            return None
+        arbiter = (task.get("cover") or {}).get("arbiter_npub")
+        cause = task.get("cause") or {}
+        ends = int(failure["at"]) + APPEAL_DAYS * 86_400 if arbiter else None
+        if not arbiter or cause.get("ruling") == "rejected" or (not cause and ends is not None and ends < at):
+            without: bool | None = True
+        elif cause.get("ruling") == "upheld":
+            without = False
+        else:
+            without = None
+        return {"at": failure["at"], "cause_ends": ends, "cause": cause or None, "without_cause": without}
 
     async def _miss(self, task: dict[str, Any], at: int) -> None:
         """Close a missed task, as the purchaser's own rule says. A lost race means someone else did it."""
         now = step(Standing(State(task["state"]), task["final"]), Action.MISS, {Role.OPERATOR})
         data = {k: task[k] for k in self._sealed_keys(task)}
         data.pop("nudges", None)
+        failed = bool(task.get("cover")) and task["state"] == State.CLAIMED
+        if failed:
+            # A job under the Standard Terms that was claimed and never delivered: a failure to deliver (14.7).
+            data["failure"] = {"at": at}
         moved = await self._rows(
             f"UPDATE {self._t('taskbooth_tasks')} SET state = $1, final = $2, data_enc = $3, "
             "version = version + 1, updated_at = $4 WHERE task_id = $5 AND version = $6 RETURNING version",
@@ -568,7 +637,7 @@ class TaskStore:
         # The purchaser's rule closed it, so the event names the purchaser.
         await self._record(
             task["task_id"], task["version"] + 1, at, task["purchaser"], Action.MISS.value,
-            task["state"], now.state.value, {},
+            task["state"], now.state.value, {"failure": True} if failed else {},
         )
 
     async def get(self, npub: str, task_id: str, at: int | None = None) -> dict[str, Any]:
@@ -721,6 +790,10 @@ class TaskStore:
         rubric = checked_rubric(rubric)
         deposit_pct = _whole(deposit_pct, "deposit percentage", most=MAX_DEPOSIT_PCT)
         page = checked_cover(cover, rubric, purchaser=purchaser, mints=mints)
+        late = checked_late(late)
+        fail = (page or {}).get("fail_after_hours", 0)
+        if fail and late["kind"] == "steps" and late["steps"][-1]["after_hours"] >= fail:
+            raise ValueError("The failure point comes after the last late step.")
         named = checked_npub(tie_breaker, "tie-breaker") if tie_breaker else purchaser
         return needed_by, {
             "title": _text(title, "title", MAX_TITLE, required=True),
@@ -734,7 +807,7 @@ class TaskStore:
             "earliest_start": earliest_start,
             "every_days": _whole(every_days, "repeat interval in days", most=3660),
             "signatures": {"purchaser": _text(signature, "signature", MAX_SIGNATURE), "performer": ""},
-            "late": checked_late(late),
+            "late": late,
             # Part of the top grade paid when the task is claimed; 0 asks for none.
             "deposit_pct": deposit_pct,
             "cover": page,
@@ -791,6 +864,7 @@ class TaskStore:
         *,
         grade: str = "",
         reasons: str = "",
+        ruling: str = "",
         performer_signature: str = "",
         as_operator: bool = False,
         deemed: bool = False,
@@ -847,6 +921,11 @@ class TaskStore:
                 sats = late_sats(chosen["sats"], int(rule["pct_per_day"]), days)
                 late_off = {"full_sats": chosen["sats"], "days_late": days,
                             "pct_off": min(100, int(rule["pct_per_day"]) * days)}
+            elif rule.get("kind") == "steps" and task.get("accomplished_at"):
+                sats, pct = step_sats(chosen["sats"], rule["steps"],
+                                      hours_late(task["needed_by"], int(task["accomplished_at"])))
+                if pct:
+                    late_off = {"full_sats": chosen["sats"], "days_late": days, "pct_off": pct}
             paid = self._paid_ahead(task)
             if paid:
                 # The deposit and milestones were part of the reward, paid early: the award is what remains.
@@ -860,6 +939,8 @@ class TaskStore:
             facts = Facts(sats=int((task.get("assessment") or {}).get("sats", 0)))
 
         now = step(was, action, roles, facts)  # raises ValueError on an illegal move
+        if action in (Action.CLAIM_CAUSE, Action.DECIDE_CAUSE):
+            self._check_cause(task, action, reasons, ruling, at)
         if task.get("cover"):
             # A job under the Standard Terms is a contract only once both parties signed one offer (terms 2.3).
             signed = task.get("agreement") or {}
@@ -939,6 +1020,11 @@ class TaskStore:
                 }
             case Action.CONFIRM_PAID | Action.RECORD_PAYMENT:
                 data["paid_at"] = at
+            case Action.CLAIM_CAUSE:
+                data["cause"] = {"reasons": reasons, "at": at}
+            case Action.DECIDE_CAUSE:
+                data["cause"] = {**data["cause"], "ruling": ruling, "ruling_reasons": reasons, "ruled_at": at}
+                detail["ruling"] = ruling
 
         moved = await self._rows(
             f"UPDATE {self._t('taskbooth_tasks')} SET state = $1, final = $2, performer_npub = $3, "
@@ -962,6 +1048,31 @@ class TaskStore:
         if after is None:  # pragma: no cover — tasks are never deleted
             raise StoreUnavailable("the task could not be read back")
         return self._view(after, self._roles(after, npub) | (roles & {Role.OPERATOR}), at)
+
+    @staticmethod
+    def _check_cause(task: dict[str, Any], action: Action, reasons: str, ruling: str, at: int) -> None:
+        """A claim of cause, or the arbiter's ruling on one, is open (terms 14.8)."""
+        failure = task.get("failure")
+        if not failure:
+            raise ValueError("This job did not fail to deliver, so there is no cause to claim.")
+        if not (task.get("cover") or {}).get("arbiter_npub"):
+            raise ValueError("No arbiter is named, so nobody can rule on cause and the failure stands (terms 14.8).")
+        cause = task.get("cause") or {}
+        if action is Action.CLAIM_CAUSE:
+            if cause:
+                raise ValueError("Cause has already been claimed for this failure.")
+            if at > int(failure["at"]) + APPEAL_DAYS * 86_400:
+                raise ValueError(f"The {APPEAL_DAYS} days to claim cause have passed (terms 14.8), "
+                                 "so the failure stands without cause.")
+            if not reasons:
+                raise ValueError("Say what the cause was.")
+            return
+        if not cause:
+            raise ValueError("Nobody has claimed cause for this failure.")
+        if cause.get("ruling"):
+            raise ValueError("The arbiter has already ruled on this claim of cause.")
+        if ruling not in ("upheld", "rejected"):
+            raise ValueError('The ruling is "upheld" or "rejected".')
 
     @staticmethod
     def _sealed_keys(task: dict[str, Any]) -> list[str]:

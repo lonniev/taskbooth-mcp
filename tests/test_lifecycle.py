@@ -44,6 +44,8 @@ LEGAL: dict[tuple[State, Action, Role], Standing] = {
     (State.OWED, Action.RECORD_PAYMENT, Role.OPERATOR): Standing(State.PAID, final=True),
     (State.POSTED, Action.MISS, Role.OPERATOR): Standing(State.MISSED, final=True),
     (State.CLAIMED, Action.MISS, Role.OPERATOR): Standing(State.MISSED, final=True),
+    (State.MISSED, Action.CLAIM_CAUSE, Role.PERFORMER): Standing(State.MISSED),  # a ruling moves no state
+    (State.MISSED, Action.DECIDE_CAUSE, Role.ARBITER): Standing(State.MISSED),
     (State.POSTED, Action.EDIT, Role.PURCHASER): Standing(State.POSTED),
     (State.OWED, Action.NUDGE_PAY, Role.PERFORMER): Standing(State.OWED),
     (State.CLAIMED, Action.NUDGE_DUE, Role.PURCHASER): Standing(State.CLAIMED),

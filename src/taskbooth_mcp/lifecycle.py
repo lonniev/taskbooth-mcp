@@ -20,7 +20,11 @@ Four things the arrows above leave out:
   pass unused, this service accepts the grade for them.
 - **Missed**: a task whose purchaser chose "cancel if missed" closes itself when
   its needed-by time passes before it is done. Like expired, nothing in the
-  background does it; the first read after the deadline records it.
+  background does it; the first read after the deadline records it. A job under
+  the Standard Terms that is still undelivered at its cover page's failure point
+  is missed the same way, as a failure to deliver (terms 14.7). Its performer
+  may then claim cause once, and its arbiter rules on the claim (terms 14.8);
+  neither moves the state.
 - **Deposit**: a task may ask for part of its top grade when it is claimed.
   The purchaser pays it straight to the performer while the task is claimed,
   and the award later pays only what the grade earns beyond it. It moves no
@@ -54,11 +58,13 @@ __all__ = [
     "State",
     "days_late",
     "deposit_sats",
+    "hours_late",
     "is_finished",
     "late_sats",
     "next_needed_by",
     "standing",
     "step",
+    "step_sats",
 ]
 
 
@@ -103,6 +109,8 @@ class Action(StrEnum):
     CONFIRM_PAID = "confirm_paid"
     RECORD_PAYMENT = "record_payment"
     MISS = "miss"
+    CLAIM_CAUSE = "claim_cause"
+    DECIDE_CAUSE = "decide_cause"
     EDIT = "edit"
     NUDGE_PAY = "nudge_pay"
     NUDGE_DUE = "nudge_due"
@@ -166,6 +174,9 @@ _ALLOWED: dict[tuple[State, Action], frozenset[Role]] = {
     (State.OWED, Action.RECORD_PAYMENT): frozenset({Role.OPERATOR}),
     (State.POSTED, Action.MISS): frozenset({Role.OPERATOR}),
     (State.CLAIMED, Action.MISS): frozenset({Role.OPERATOR}),
+    # After a failure to deliver, the performer may claim cause, and the arbiter rules on it.
+    (State.MISSED, Action.CLAIM_CAUSE): frozenset({Role.PERFORMER}),
+    (State.MISSED, Action.DECIDE_CAUSE): frozenset({Role.ARBITER}),
     # The terms may change only while nobody has agreed to them.
     (State.POSTED, Action.EDIT): frozenset({Role.PURCHASER}),
     # Reminders change nothing: the performer asks to be paid, the purchaser
@@ -235,7 +246,8 @@ def step(
         case Action.MISS:
             return Standing(State.MISSED, final=True)
         case (Action.EDIT | Action.NUDGE_PAY | Action.NUDGE_DUE | Action.DEPOSIT_INVOICE | Action.CONFIRM_DEPOSIT
-              | Action.MILESTONE_INVOICE | Action.CONFIRM_MILESTONE | Action.SIGN):
+              | Action.MILESTONE_INVOICE | Action.CONFIRM_MILESTONE | Action.SIGN | Action.CLAIM_CAUSE
+              | Action.DECIDE_CAUSE):
             return now
     raise ValueError(f"Unknown action '{action}'.")  # pragma: no cover — the enum is closed
 
@@ -274,8 +286,9 @@ def next_needed_by(needed_by: int, every_days: int, at: int) -> int:
 
 
 #: What a purchaser may say happens when a task is done late: pay in full, take
-#: a percentage off for each day late, or cancel it once the deadline passes.
-LATE_KINDS = ("full", "discount", "cancel")
+#: a percentage off for each day late, take off a rising percentage in steps,
+#: or cancel it once the deadline passes.
+LATE_KINDS = ("full", "discount", "steps", "cancel")
 
 _DAY = 86_400
 
@@ -288,6 +301,25 @@ def days_late(needed_by: int, at: int) -> int:
     """
     over = at - needed_by
     return 0 if over <= 0 else -(-over // _DAY)
+
+
+def hours_late(needed_by: int, at: int) -> float:
+    """Hours past the needed-by time, as a fraction; 0 when on time."""
+    return max(0, at - needed_by) / 3600
+
+
+def step_sats(sats: int, steps: list[dict[str, int]], late_by_hours: float) -> tuple[int, int]:
+    """What a grade earns under late steps, and the percentage that came off.
+
+    A step applies once the work is more than its ``after_hours`` late; the last
+    step that applies is the one in force. On time, nothing comes off.
+    """
+    pct = 0
+    if late_by_hours > 0:
+        for s in steps:
+            if late_by_hours > s["after_hours"]:
+                pct = s["pct_off"]
+    return sats * (100 - pct) // 100, pct
 
 
 def late_sats(sats: int, pct_per_day: int, days: int) -> int:
