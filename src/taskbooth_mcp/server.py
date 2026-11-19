@@ -177,6 +177,7 @@ INSPECT_TASK_UUID = "7d03afcd-e04e-40e7-ae3f-f97a7f482c0c"
 REQUEST_INSPECTION_SIGNATURE_UUID = "4c4551ca-d4e5-4d8d-b842-f6e4c40ec3ef"
 RECEIVE_INSPECTION_SIGNATURE_UUID = "405dcda0-e7c9-4d6d-92ff-e475acb2856d"
 REPUTATION_UUID = "035bf3fd-c12b-4bfc-91df-0f52133b8729"
+FILE_TASK_UUID = "4a56d010-554d-4aa1-83f2-2ddf0f96523c"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -240,6 +241,8 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
     _identity(RECEIVE_INSPECTION_SIGNATURE_UUID, "receive_inspection_signature", "write",
               "Keep the inspector's signed opinion", WRITES_REMOTE,
               "Collect the signed reply to the opinion DM and keep it as the inspector's opinion"),
+    _identity(FILE_TASK_UUID, "file_task", "write", "Move a task into a Project", WRITES,
+              "File a task you posted in a Project of an Organization you are in, or move it to another"),
     _identity(REPUTATION_UUID, "reputation", "free", "An npub's reputation", READS,
               "Counts of what an npub did on commissions as client, artist, arbiter and inspector"),
     _identity(STANDARD_TERMS_UUID, "standard_terms", "free", "The Standard Terms", READS,
@@ -870,6 +873,25 @@ async def receive_inspection_signature(
     db = await store()
     task = await _do(db.inspect(me, str(task_id), verdict, reasons, got["signature"],
                                 operator_npub=runtime.operator_npub()))
+    return {"ok": True, "task": task}
+
+
+@tool
+@runtime.paid_tool(FILE_TASK_UUID)
+async def file_task(task_id: str, org_id: str, project_id: str, npub: PatronNpub = "") -> dict[str, Any]:
+    """Move a task you posted into a Project, or from one Project to another, in any state.
+
+    Where a task is filed is no term of it: its offer and signatures stand, and its terms may
+    differ from the Project's defaults, which only start new tasks. You must be able to post
+    in the Project (owner or member of its Organization), and it must not be archived.
+
+    Args:
+        task_id: A task you posted.
+        org_id: The Organization (taskbooth_list_organizations).
+        project_id: One of its Projects.
+    """
+    db = await store()
+    task = await _do(db.file(runtime.resolve_npub(npub), str(task_id), org_id, project_id))
     return {"ok": True, "task": task}
 
 
