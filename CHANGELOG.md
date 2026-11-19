@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.8.0] — 2026-11-19
+
+### Added
+
+- `file_task(task_id, org_id, project_id)`: the purchaser moves a task into a Project, or from one Project to another, in any state. Its offer and signatures stand, and its terms may differ from the Project's defaults, which only start new tasks.
+
 ## [0.7.0] — 2026-11-19
 
 ### Changed
