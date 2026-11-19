@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.5.0] — 2026-11-18
+
+### Added
+
+- Late steps: `late={"kind": "steps", "steps": [{"after_hours": 0, "pct_off": 10}, {"after_hours": 72, "pct_off": 25}]}` takes off the percentage of the last step the work is more than that many hours late.
+- A cover page's failure point, `fail_after_hours`: a claimed job still undelivered that long past needed_by ends as missed, for failure to deliver (terms 14.7). Escrow needs one, and the refund floor counts from it in place of the fixed 7 days' grace.
+- `taskbooth_claim_cause` (the performer, once, within 7 days) and `taskbooth_decide_cause` (the arbiter: upheld or rejected). A task's `failure` says when cause may be claimed until and whether the failure is without cause; a failure without cause on an escrowed job reads `escrow_due_to: "client"` (terms 14.10). Both tools start unpriced.
+- Standard Terms v1, still a draft, edited in place: 4.10 late steps; 14.3 drops the fixed 7 days; 14.7–14.12 failure to deliver, cause, no clawback of paid amounts, the whole escrow to the client, and handed-over materials become the client's.
+
 ## [0.4.4] — 2026-11-18
 
 ### Added
