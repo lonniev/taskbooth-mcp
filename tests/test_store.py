@@ -37,12 +37,20 @@ def family():
     return {"parent": _npub(), "child": _npub(), "sibling": _npub(), "other_parent": _npub()}
 
 
+async def _filed_in(db, owner):
+    """A Project ``owner`` may post in: a commission is filed in one."""
+    org = await db.save_org(owner, "The household", at=NOW)
+    return {"org_id": org, "project_id": await db.save_project(owner, org, "Commissions", at=NOW)}
+
+
 async def _post(db, family, **over):
     args = {
         "title": "Clean your room", "description": "Before Grandma visits", "rubric": RUBRIC,
         "audience": [family["child"], family["sibling"]], "needed_by": NOW + 2 * DAY,
         "tie_breaker": family["other_parent"], "at": NOW,
     } | over
+    if args.get("cover") and "project_id" not in args:
+        args |= await _filed_in(db, family["parent"])
     return await db.post(family["parent"], **args)
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from taskbooth_mcp.lifecycle import APPEAL_DAYS, ARBITER_DAYS
+from taskbooth_mcp.lifecycle import window_hours
 
 __all__ = ["reputation_of"]
 
@@ -92,7 +92,8 @@ def _arbiter(tasks: list[dict[str, Any]]) -> dict[str, int]:
         for record, asked, decided in asked_decided:
             if record.get(decided):
                 out["decided"] += 1
-                out["decided_in_time"] += int(record[decided]) - int(record[asked]) <= ARBITER_DAYS * DAY
+                out["decided_in_time"] += int(record[decided]) - int(record[asked]) <= (
+                    window_hours(t["cover"], "ruling_hours") * 3_600)
     return out
 
 
@@ -107,7 +108,8 @@ def _inspector(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         out["opinions"] += 1
         out["verdicts"][opinion["verdict"]] += 1
         # In time is before the client must grade, so the opinion can still inform the grade.
-        window = int(t["cover"].get("deemed_acceptance_days") or APPEAL_DAYS) * DAY
+        deemed = int(t["cover"].get("deemed_acceptance_days") or 0) * DAY
+        window = deemed or window_hours(t["cover"], "appeal_hours") * 3_600
         out["opinions_in_time"] += int(opinion["at"]) <= int(t["accomplished_at"]) + window
     return out
 

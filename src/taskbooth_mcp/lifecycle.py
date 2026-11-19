@@ -46,13 +46,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 __all__ = [
-    "APPEAL_DAYS",
-    "ARBITER_DAYS",
+    "DEFAULT_WINDOW_HOURS",
     "EXPIRED",
     "LATE_KINDS",
     "MAX_DEPOSIT_PCT",
+    "MAX_WINDOW_HOURS",
+    "WINDOWS",
     "Action",
     "Facts",
     "Role",
@@ -67,6 +69,7 @@ __all__ = [
     "standing",
     "step",
     "step_sats",
+    "window_hours",
 ]
 
 
@@ -87,9 +90,16 @@ class State(StrEnum):
 EXPIRED = "expired"
 
 
-#: Days the Standard Terms give an appeal or a claim of cause (4.6, 14.7), and the arbiter to decide it.
-APPEAL_DAYS = 7
-ARBITER_DAYS = 7
+#: The windows a cover page sets, in hours: to appeal a grade or claim cause (terms 4.6, 14.8), for the
+#: arbiter to rule (14.8), and for the client to pay (7.2). A cover signed before they were set reads as 7 days.
+WINDOWS = ("appeal_hours", "ruling_hours", "pay_hours")
+DEFAULT_WINDOW_HOURS = 168
+MAX_WINDOW_HOURS = 90 * 24
+
+
+def window_hours(cover: dict[str, Any] | None, name: str) -> int:
+    """One of a cover page's windows, in hours."""
+    return int((cover or {}).get(name) or DEFAULT_WINDOW_HOURS)
 
 
 class Role(StrEnum):

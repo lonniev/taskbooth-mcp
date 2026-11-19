@@ -7,7 +7,7 @@ from pynostr.key import PrivateKey
 
 from taskbooth_mcp import server
 from tests.fake_mint import MINT_URL, FakeMint
-from tests.test_tools import PARENT, RUBRIC, billing, call, queue  # noqa: F401 — fixtures
+from tests.test_tools import PARENT, RUBRIC, billing, call, filed, queue  # noqa: F401 — fixtures
 
 ARBITER = PrivateKey().public_key.bech32()
 DAY = 86_400
@@ -31,7 +31,7 @@ def _cover(**over):
 async def _post(**over):
     args = {"title": "A portrait of Murray Rothbard", "rubric": RUBRIC, "audience": [PrivateKey().public_key.bech32()],
             "needed_by": int(time.time()) + 2 * DAY, "cover": _cover(), "npub": PARENT} | over
-    return await call("post_task", **args)
+    return await call("post_task", **(await filed(args["npub"])), **args)
 
 
 async def test_the_owner_lists_the_mints_and_a_bad_address_is_skipped(monkeypatch):

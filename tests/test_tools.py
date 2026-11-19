@@ -89,6 +89,13 @@ async def call(tool, **args):
     return json.loads(result.content[0].text)
 
 
+async def filed(npub):
+    """A Project ``npub`` may post a commission in, made through the tools."""
+    org = (await call("save_organization", name="The household", npub=npub))["org_id"]
+    project = await call("save_project", org_id=org, name="Commissions", npub=npub)
+    return {"org_id": org, "project_id": project["project_id"]}
+
+
 async def post(**over):
     args = {"title": "Clean your room", "rubric": RUBRIC, "audience": [CHILD, SIBLING],
             "needed_by": int(time.time()) + 2 * DAY, "tie_breaker": OTHER_PARENT, "npub": PARENT} | over

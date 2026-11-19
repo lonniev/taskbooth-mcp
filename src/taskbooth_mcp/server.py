@@ -304,6 +304,18 @@ PATRON_PROPERTIES: dict[str, PropertySpec] = {
     ),
 }
 
+#: Where reputation ranks begin (taskbooth_reputation). Pages rank an npub's counts against these: under
+#: rank_min_finished finished is New; then Proven, Trusted and Exemplary each need their share gone well,
+#: and Trusted and Exemplary a number finished.
+RANK_THRESHOLDS: tuple[tuple[str, int, int, int, str, str], ...] = (
+    ("rank_min_finished", 3, 1, 100, "Finished before a rank", "How many finished in a role before it is ranked at all."),
+    ("rank_proven_pct", 75, 0, 100, "Proven: % gone well", "The share gone well that makes a role Proven."),
+    ("rank_trusted_pct", 90, 0, 100, "Trusted: % gone well", "The share gone well that makes a role Trusted."),
+    ("rank_trusted_finished", 10, 1, 500, "Trusted: finished", "How many finished a role needs to be Trusted."),
+    ("rank_exemplary_pct", 95, 0, 100, "Exemplary: % gone well", "The share gone well that makes a role Exemplary."),
+    ("rank_exemplary_finished", 20, 1, 1000, "Exemplary: finished", "How many finished a role needs to be Exemplary."),
+)
+
 #: What the owner sets for this Operator (taskbooth_set_operator_property).
 OPERATOR_PROPERTIES: dict[str, PropertySpec] = {
     "escrow_mints": PropertySpec(
@@ -312,6 +324,8 @@ OPERATOR_PROPERTIES: dict[str, PropertySpec] = {
                     "testnut.cashu.space is a test mint whose sats are not real: use it only to try escrow out.",
         suggestions=("https://testnut.cashu.space",),
     ),
+    **{name: PropertySpec(kind="number", default=default, label=label, description=about, minimum=least, maximum=most)
+       for name, default, least, most, label, about in RANK_THRESHOLDS},
 }
 
 TOOL_REGISTRY: dict[str, ToolIdentity] = {ti.tool_id: ti for ti in _DOMAIN_TOOLS}
@@ -456,7 +470,7 @@ async def post_task(
         tie_breaker: The npub who decides an appeal. Omitted, it is you.
         assessors: Other npubs who may grade it for you.
         org_id: The Organization this is filed under (taskbooth_list_organizations). Give it with
-            project_id, or neither. You must own or belong to it.
+            project_id, or neither. You must own or belong to it. A task with a cover page must be filed.
         project_id: The Project in that Organization it belongs to. An archived Project takes none.
         signature: Your signature on the offer, when your client makes one.
         late: What happens if it is done after needed_by. {"kind": "full"} pays in full (the default);
@@ -474,15 +488,18 @@ async def post_task(
              "confidential": false, "client_is_consumer": false, "third_party_allowed": false,
              "governing_law": "…", "venue": "…",
              "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 35,
-             "fail_after_hours": 168}.
+             "fail_after_hours": 168, "inspector_npub": "npub1…",
+             "appeal_hours": 168, "ruling_hours": 168, "pay_hours": 168}.
             Every field is optional. fail_after_hours is the failure point: work still undelivered that many
             hours past needed_by ends the job for failure to deliver (terms 14.7), and the performer may then
             claim cause (taskbooth_claim_cause). It comes after the last late step. A named arbiter signs the
             offer and decides any appeal or claim of cause. Escrow holds the Balance at a mint this Operator
             offers (taskbooth_get_operator_properties, escrow_mints); it needs an arbiter, a deemed grade and a
-            failure point. refund_days sets the refund date after the needed-by time, and is at least 14 plus
-            deemed_acceptance_days plus the failure point in whole days (7 to appeal, 7 for the arbiter), so
-            the purchaser cannot take the escrow back while an appeal is open.
+            failure point. appeal_hours is the time to appeal a grade or claim cause, ruling_hours the
+            arbiter's time to decide, and pay_hours the client's time to pay; each is 1 hour to 90 days and
+            7 days when left out. refund_days sets the refund date after the needed-by time, and is at least
+            deemed_acceptance_days plus the failure point, appeal_hours and ruling_hours in whole days, so the
+            purchaser cannot take the escrow back while an appeal is open.
         milestones: Dated part-payments of the top grade, up to 6:
             [{"name": "Halfway", "due_at": <Unix seconds>, "pct": 45}]. With deposit_pct they ask for
             at most 90%. Each is payable from its date, and the award pays only what is left.
@@ -862,12 +879,15 @@ async def reputation(of_npub: str) -> dict[str, Any]:
     """What an npub has done on commissions, as client, artist, arbiter and inspector: counts only.
 
     Only jobs under the Standard Terms count. Nothing names a job, its title or its sats.
+    ``ranks`` are the operator's thresholds for reading the counts as a rank.
 
     Args:
         of_npub: Whose reputation.
     """
     db = await store()
-    return {"ok": True, **await _do(db.reputation(str(of_npub)))}
+    counts = await _do(db.reputation(str(of_npub)))
+    ranks = {name: int(await runtime.operator_property(name)) for name, *_ in RANK_THRESHOLDS}
+    return {"ok": True, **counts, "ranks": ranks}
 
 
 @tool

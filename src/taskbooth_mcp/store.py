@@ -34,11 +34,12 @@ from taskbooth_mcp import feed, orgs, terms
 from taskbooth_mcp.agreement import VERDICTS, inspection_hash, offer_hash, offer_statement
 from taskbooth_mcp.escrow import FUNDED_STATES, INVOICED, SETTLED, escrow_summary
 from taskbooth_mcp.lifecycle import (
-    APPEAL_DAYS,
-    ARBITER_DAYS,
+    DEFAULT_WINDOW_HOURS,
     EXPIRED,
     LATE_KINDS,
     MAX_DEPOSIT_PCT,
+    MAX_WINDOW_HOURS,
+    WINDOWS,
     Action,
     Facts,
     Role,
@@ -52,6 +53,7 @@ from taskbooth_mcp.lifecycle import (
     standing,
     step,
     step_sats,
+    window_hours,
 )
 from taskbooth_mcp.reputation import reputation_of
 
@@ -203,7 +205,7 @@ IP_OPTIONS = ("assign", "license", "worker_keeps", "custom")
 _COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deemed_acceptance_days", "ip_option",
                  "ip_custom_text", "confidential", "client_is_consumer", "third_party_allowed", "governing_law",
                  "venue", "arbiter_npub", "inspector_npub", "escrow", "escrow_mint", "refund_days",
-                 "fail_after_hours")
+                 "fail_after_hours", *WINDOWS)
 MAX_DELIVERABLES = 20
 MAX_DEEMED_DAYS = 60
 MAX_REFUND_DAYS = 90
@@ -214,17 +216,17 @@ def fail_days(fail_after_hours: int) -> int:
     return -(-fail_after_hours // 24)
 
 
-def least_refund_days(deemed_days: int, fail_after_hours: int) -> int:
+def least_refund_days(deemed_days: int, fail_after_hours: int, appeal_hours: int, ruling_hours: int) -> int:
     """The shortest refund period that cannot cut an appeal or a claim of cause short.
 
     The client alone may take the escrow back from the refund date (terms 6.6),
-    so it must fall after the latest day the arbiter could still be deciding:
+    so it must fall after the latest moment the arbiter could still be deciding:
     a delivery just before the failure point, a grade on the last day of the
-    deemed-acceptance period, an appeal on its last day, and a week to decide.
-    A failure to deliver needs no more: its claim of cause takes the same week
-    and its ruling the same week, from an earlier day.
+    deemed-acceptance period, an appeal at the end of its window, and the
+    arbiter's ruling time. A failure to deliver needs no more: its claim of
+    cause takes the same window and its ruling the same time, from earlier.
     """
-    return fail_days(fail_after_hours) + deemed_days + APPEAL_DAYS + ARBITER_DAYS
+    return deemed_days + fail_days(fail_after_hours + appeal_hours + ruling_hours)
 MAX_MILESTONES = 6
 
 
@@ -234,8 +236,8 @@ def _flag(value: Any, what: str) -> bool:
     return value
 
 
-def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, ...],
-                   deemed_days: int = 0, fail_after_hours: int = 0) -> dict[str, Any]:
+def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, ...], deemed_days: int = 0,
+                   fail_after_hours: int = 0, appeal_hours: int = 0, ruling_hours: int = 0) -> dict[str, Any]:
     """The arbiter and escrow fields of a cover page.
 
     Escrow needs a named arbiter (without one the dates decide and the job stays
@@ -271,13 +273,13 @@ def checked_escrow(value: dict[str, Any], *, purchaser: str, mints: tuple[str, .
         raise ValueError(f"The escrow mint: {exc}.") from None
     if mint not in mints:
         raise ValueError(f"The escrow mint must be one this Operator offers: {', '.join(mints)}.")
-    least = least_refund_days(deemed_days, fail_after_hours)
+    least = least_refund_days(deemed_days, fail_after_hours, appeal_hours, ruling_hours)
     if isinstance(days, int) and not isinstance(days, bool) and 0 < days < least:
         raise ValueError(
-            f"The refund period must be at least {least} days: {fail_days(fail_after_hours)} days to the "
-            "failure point, "
-            f"the {deemed_days}-day deemed-acceptance period, {APPEAL_DAYS} days to appeal, and {ARBITER_DAYS} "
-            "for the arbiter to decide. Before then the client alone could take the escrow back mid-appeal.")
+            f"The refund period must be at least {least} days: the {deemed_days}-day deemed-acceptance period, "
+            f"then {fail_after_hours} hours to the failure point, the {appeal_hours}-hour appeal window and the "
+            f"arbiter's {ruling_hours}-hour ruling time, rounded up to whole days. Before then the client alone "
+            "could take the escrow back mid-appeal.")
     days = _whole(days, "refund period in days", least=least, most=MAX_REFUND_DAYS)
     return {"arbiter_npub": arbiter, "escrow": True, "escrow_mint": mint, "refund_days": days}
 
@@ -320,7 +322,12 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
     custom = _text(value.get("ip_custom_text", ""), "custom IP terms", MAX_TEXT, required=ip == "custom")
     # Hours past the needed-by time after which undelivered work is a failure to deliver (terms 14.7); 0 for none.
     fail = _whole(value.get("fail_after_hours", 0), "failure point in hours late", most=MAX_LATE_HOURS)
-    held = checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days, fail_after_hours=fail)
+    # How long to appeal or claim cause, for the arbiter to rule, and for the client to pay (terms 4.6, 14.8, 7.2).
+    names = {"appeal_hours": "appeal window", "ruling_hours": "arbiter's ruling time", "pay_hours": "payment window"}
+    windows = {w: _whole(value.get(w, DEFAULT_WINDOW_HOURS), f"{names[w]} in hours", least=1, most=MAX_WINDOW_HOURS)
+               for w in WINDOWS}
+    held = checked_escrow(value, purchaser=purchaser, mints=mints, deemed_days=days, fail_after_hours=fail,
+                          appeal_hours=windows["appeal_hours"], ruling_hours=windows["ruling_hours"])
     # An independent party who signs the offer and may give one signed opinion of the work (terms 8).
     inspector = checked_npub(value["inspector_npub"], "inspector") if value.get("inspector_npub") else ""
     if inspector and inspector in (purchaser, held["arbiter_npub"]):
@@ -342,6 +349,7 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
         "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
         "venue": _text(value.get("venue", ""), "venue", 200),
         "fail_after_hours": fail,
+        **windows,
         "inspector_npub": inspector,
         **held,
     }
@@ -583,11 +591,11 @@ class TaskStore:
 
     @staticmethod
     def _appeal_ends(task: dict[str, Any]) -> int | None:
-        """When the days to appeal a provisional grade run out, for a job under the Standard Terms (4.6)."""
+        """When the appeal window for a provisional grade closes, for a job under the Standard Terms (4.6)."""
         graded = (task.get("assessment") or {}).get("at")
         if not task.get("cover") or graded is None:
             return None
-        return int(graded) + APPEAL_DAYS * 86_400
+        return int(graded) + window_hours(task["cover"], "appeal_hours") * 3_600
 
     @classmethod
     def _wants_lapse(cls, task: dict[str, Any], at: int) -> bool:
@@ -623,7 +631,7 @@ class TaskStore:
             return None
         arbiter = (task.get("cover") or {}).get("arbiter_npub")
         cause = task.get("cause") or {}
-        ends = int(failure["at"]) + APPEAL_DAYS * 86_400 if arbiter else None
+        ends = int(failure["at"]) + window_hours(task.get("cover"), "appeal_hours") * 3_600 if arbiter else None
         if not arbiter or cause.get("ruling") == "rejected" or (not cause and ends is not None and ends < at):
             without: bool | None = True
         elif cause.get("ruling") == "upheld":
@@ -769,6 +777,9 @@ class TaskStore:
         )
         data["site"] = checked_site(site)
         org_id, project_id = await self._filing(purchaser, org_id, project_id)
+        if data["cover"] and not project_id:
+            raise ValueError("A commission is filed in a Project of an Organization you are in: "
+                             "pass its org_id and project_id.")
         task_id = new_id()
         await self._insert(
             task_id=task_id, purchaser=purchaser, needed_by=needed_by, series_id=task_id, occurrence=0,
@@ -923,10 +934,10 @@ class TaskStore:
             await self._lapse(task, at)
             task = await self._load(task_id) or task
             if action is Action.APPEAL:
-                raise ValueError(f"The {APPEAL_DAYS} days to appeal this grade have passed (terms 4.6), "
+                raise ValueError("The appeal window for this grade has closed (terms 4.6), "
                                  "so it was accepted as it stands.")
         if as_operator and action is Action.ACCEPT and not lapsed:
-            raise ValueError("This service accepts a grade only when the days to appeal it have run out.")
+            raise ValueError("This service accepts a grade only when its appeal window has closed.")
 
         was = Standing(State(task["state"]), task["final"])
         reasons = _text(reasons, "reasons", MAX_TEXT)
@@ -1086,8 +1097,8 @@ class TaskStore:
         if action is Action.CLAIM_CAUSE:
             if cause:
                 raise ValueError("Cause has already been claimed for this failure.")
-            if at > int(failure["at"]) + APPEAL_DAYS * 86_400:
-                raise ValueError(f"The {APPEAL_DAYS} days to claim cause have passed (terms 14.8), "
+            if at > int(failure["at"]) + window_hours(task.get("cover"), "appeal_hours") * 3_600:
+                raise ValueError("The appeal window to claim cause has closed (terms 14.8), "
                                  "so the failure stands without cause.")
             if not reasons:
                 raise ValueError("Say what the cause was.")
