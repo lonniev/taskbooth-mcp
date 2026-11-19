@@ -1,1 +1,0 @@
-- `file_task(task_id, org_id, project_id)`: the purchaser moves a task into a Project, or from one Project to another, in any state. Its offer and signatures stand, and its terms may differ from the Project's defaults, which only start new tasks.
