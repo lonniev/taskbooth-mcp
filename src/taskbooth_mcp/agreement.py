@@ -47,7 +47,7 @@ def offer_statement(task: dict[str, Any]) -> str:
     lines = [
         f"Task Booth offer {task['task_id']}",
         f"Purchaser: {task['purchaser']}",
-        f"Title: {task['title']}",
+        f"Title: {_line(task['title'])}",
         f"Description sha256: {hashlib.sha256(task.get('description', '').encode()).hexdigest()}",
         f"Needed by: {_when(task['needed_by'])}",
         f"Grades: {grades}",
@@ -64,8 +64,22 @@ def offer_statement(task: dict[str, Any]) -> str:
         lines.append(f"Appeal window: {window_hours(cover, 'appeal_hours')} hours")
         lines.append(f"Arbiter's ruling time: {window_hours(cover, 'ruling_hours')} hours")
         lines.append(f"Payment window: {window_hours(cover, 'pay_hours')} hours")
+        if cover.get("spec_url"):
+            lines.append(f"Spec: {_line(cover['spec_url'])}")
         if cover.get("spec_hash"):
             lines.append(f"Spec sha256: {cover['spec_hash']}")
+        for n, d in enumerate(cover.get("deliverables") or [], 1):
+            lines.append(f"Deliverable {n}: {_line(d)}")
+        if cover.get("deemed_grade"):
+            lines.append(f"Deemed grade: {_line(cover['deemed_grade'])} if not graded within "
+                         f"{int(cover['deemed_acceptance_days'])} days of delivery")
+        if cover.get("fail_after_hours"):
+            lines.append(f"Failure point: {int(cover['fail_after_hours'])} hours after the needed-by time")
+        lines.append(f"IP: {_ip(cover)}")
+        lines.append(f"Confidential: {_yes(cover.get('confidential'))}")
+        lines.append(f"Third-party material allowed: {_yes(cover.get('third_party_allowed'))}")
+        lines.append(f"Governing law: {_line(cover.get('governing_law') or '') or _HOME}")
+        lines.append(f"Venue: {_line(cover.get('venue') or '') or _HOME}")
         if cover.get("arbiter_npub"):
             lines.append(f"Arbiter: {cover['arbiter_npub']}")
         if cover.get("inspector_npub"):
@@ -78,11 +92,42 @@ def offer_statement(task: dict[str, Any]) -> str:
     return normalized_statement("\n".join(lines))
 
 
+def _line(text: str) -> str:
+    """Free text on one line, so no field can add a line of its own to the statement."""
+    return " ".join(str(text).split())
+
+
+def _yes(flag: Any) -> str:
+    return "yes" if flag else "no"
+
+
+#: What a blank law or venue means (terms 15.3).
+_HOME = "the performer's place of residence (terms 15.3)"
+
+_IP = {
+    "assign": "assigned to the purchaser on payment in full (terms 9.1)",
+    "license": "licensed to the purchaser; the performer keeps ownership",
+    "worker_keeps": "the performer keeps every right; the purchaser receives the deliverables",
+}
+
+
+def _ip(cover: dict[str, Any]) -> str:
+    option = cover.get("ip_option") or "assign"
+    if option == "custom":
+        return f"as written: {_line(cover.get('ip_custom_text') or '')}"
+    return _IP.get(option, _line(option))
+
+
 def _late(rule: dict[str, Any]) -> str:
-    if rule.get("kind") == "discount":
-        return f"{rule['pct_per_day']}% off the grade for each day late"
-    if rule.get("kind") == "cancel":
-        return "cancelled if not done by the needed-by time"
+    """The late rule in words, for every kind there is (terms 4.10)."""
+    kind = rule.get("kind")
+    if kind == "discount":
+        return f"{rule['pct_per_day']}% off the grade for each day late, never below zero"
+    if kind == "steps":
+        steps = "; ".join(f"{s['pct_off']}% off once more than {s['after_hours']} hours late" for s in rule["steps"])
+        return f"late steps, the last that applies: {steps}"
+    if kind == "cancel":
+        return "the job ends as missed if not delivered by the needed-by time"
     return "paid in full"
 
 

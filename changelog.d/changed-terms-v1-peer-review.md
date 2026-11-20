@@ -1,0 +1,8 @@
+- Standard Terms v1, still a draft and edited in place, after a peer review:
+  - §4.8: with no Arbiter, the Worker may still appeal, and the Client (or the Client's tie-breaker) decides.
+  - §4.10: every late rule is covered: full, a percentage per day, late steps, or ending as missed.
+  - New §5.11: a payment that has reached a party is final, and only escrow can go back to the Client.
+  - §6.7 states the refund-date floor the code already enforces.
+  - New §9.8: a moral-rights waiver on assignment.
+  - §14.3: a Worker who gives the job back keeps the deposit. §14.9 points to §5.11.
+- The signed offer writes out every term. Every late rule reads as the code applies it; before, late steps read "paid in full". The offer also lists the spec link, each deliverable, the deemed grade, the failure point, IP, confidentiality, third-party material, governing law and venue. Free text is flattened to one line, so no field can add a line of its own.

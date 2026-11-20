@@ -488,7 +488,7 @@ async def post_task(
             {"spec_url": "https://…", "spec_hash": "<sha256 hex>", "deliverables": ["…"],
              "deemed_grade": "<a rubric grade>", "deemed_acceptance_days": 14,
              "ip_option": "assign" | "license" | "worker_keeps" | "custom", "ip_custom_text": "…",
-             "confidential": false, "client_is_consumer": false, "third_party_allowed": false,
+             "confidential": false, "third_party_allowed": false,
              "governing_law": "…", "venue": "…",
              "arbiter_npub": "npub1…", "escrow": true, "escrow_mint": "https://…", "refund_days": 35,
              "fail_after_hours": 168, "inspector_npub": "npub1…",
@@ -768,8 +768,8 @@ async def decide_appeal(task_id: str, grade: str, reasons: str = "", npub: Patro
 async def claim_cause(task_id: str, reasons: str, npub: PatronNpub = "") -> dict[str, Any]:
     """Claim cause for a failure to deliver, once, for the arbiter to rule on (terms 14.8).
 
-    A job still undelivered at its failure point ends for failure to deliver. Within 7 days
-    you may say why, such as the client not supplying what the spec promised. Without a
+    A job still undelivered at its failure point ends for failure to deliver. Within the
+    appeal window on its cover page you may say why, such as the client not supplying what the spec promised. Without a
     claim, or without an arbiter, the failure stands without cause.
 
     Args:
@@ -1365,7 +1365,7 @@ async def save_project(
         budget_sats: What it may spend in all, in sats. 0 for no budget.
         circle: The npubs invited to each new task in it.
         defaults: Default cover terms: {"deemed_acceptance_days": 14, "ip_option": "assign" | "license" |
-            "worker_keeps" | "custom", "ip_custom_text": "…", "confidential": false, "client_is_consumer": false,
+            "worker_keeps" | "custom", "ip_custom_text": "…", "confidential": false,
             "third_party_allowed": false, "governing_law": "…", "venue": "…"}. Every field is optional.
         project_id: One of the Organization's Projects to change. Omit to make a new one.
     """
