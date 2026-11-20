@@ -308,7 +308,7 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
     _identity(BTC_PRICE_UUID, "btc_price", "free", "Bitcoin's price", READS_REMOTE,
               "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
     _identity(MINT_FACTS_UUID, "mint_facts", "free", "Facts about escrow mints", READS_REMOTE,
-              "What a Cashu mint, cashumints.space, the Round Robin Auditor and a live lock test say of each mint"),
+              "What a Cashu mint, cashumints.space, the Round Robin Auditor, its node and server, and a lock test say of it"),
     _identity(FIND_MINTS_UUID, "find_mints", "free", "Find escrow mints", READS_REMOTE,
               "Online Cashu mints that claim every NUT an escrow needs, each with its facts"),
     _identity(MINT_TEST_START_UUID, "mint_test_start", "restricted", "Start a live lock test", WRITES_REMOTE,
@@ -1539,6 +1539,11 @@ async def mint_facts(mints: list[str] | None = None) -> dict[str, Any]:
       first seen, and its review count with the date of the latest.
     - auditor: the Round Robin Auditor's swaps with it, how many failed, and clean_since, when its
       run of good swaps began.
+    - located: where its web server is (ipinfo.io): city, country and network; front is true when the
+      address is a shared front such as Cloudflare, which says nothing of the mint itself.
+    - node: the Lightning node its invoices pay, named by an unpaid quote, and mempool.space's record of
+      it: alias, capacity, channels, first seen, last announced, country, or announced false if private.
+      Both are read once a day.
     - live_test: this Operator's latest live lock test there, if any: one signature refused, two
       taken, a refund after its date taken, and the sats returned.
     A source that did not answer reads as unreachable, which says nothing of the mint. This

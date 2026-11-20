@@ -18,8 +18,13 @@ def iso(t):
 
 
 @pytest.fixture(autouse=True)
-def forget():
+def forget(monkeypatch):
     mints._kept.clear()
+
+    async def no_address(host):
+        return ""
+
+    monkeypatch.setattr(mints, "_address_of", no_address)
 
 
 def transport(*, auditor=None, cashumints_up=True, info=None, listed=True):
@@ -139,3 +144,90 @@ def test_only_public_https_mints_are_asked_about(bad):
 def test_at_most_sixty_mints():
     with pytest.raises(ValueError):
         mints.checked_mints([f"https://m{i}.example" for i in range(61)])
+
+
+# --- where the mint is, and its Lightning node --------------------------------------------
+
+#: BOLT11's own example invoice, signed by node 03e7156ae33b…
+SPEC_INVOICE = (
+    "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqf"
+    "qqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2u"
+    "eh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql"
+)
+NODE = "03e7156ae33b0a208d0744199163177e909e80176e55d97a2f221ede0f934dd9ad"
+
+
+def place_and_node(*, org="AS24940 Hetzner Online GmbH", node_known=True, quote_ok=True, asked=None):
+    asked = asked if asked is not None else []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith(mints.IPINFO_API):
+            return httpx.Response(200, json={"ip": "195.201.20.134", "city": "Nuremberg", "region": "Bavaria",
+                                             "country": "DE", "org": org})
+        if url.endswith("/v1/mint/quote/bolt11"):
+            asked.append(request.read())
+            return (httpx.Response(200, json={"quote": "q", "request": SPEC_INVOICE}) if quote_ok
+                    else httpx.Response(400, json={"detail": "amount too small", "code": 11006}))
+        if url.startswith(mints.MEMPOOL_API):
+            if not node_known:
+                return httpx.Response(404)
+            return httpx.Response(200, json={"alias": "minibits.cash", "capacity": "28868357", "active_channel_count": 8,
+                                             "first_seen": NOW - 1000 * DAY, "updated_at": NOW - 10 * DAY,
+                                             "iso_code": "DE", "country": {"en": "Germany"}, "city": {"en": "Gunzenhausen"},
+                                             "as_organization": "Hetzner Online GmbH", "sockets": "195.201.20.134:9735"})
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handle)
+
+
+@pytest.fixture
+def addressed(monkeypatch):
+    async def address(host):
+        return "195.201.20.134"
+
+    monkeypatch.setattr(mints, "_address_of", address)
+
+
+async def test_the_web_server_is_placed_by_its_address(addressed):
+    async with httpx.AsyncClient(transport=place_and_node()) as http:
+        got = await mints.located(URL, at=NOW, http=http)
+    assert got == {"source": "ipinfo.io", "observed_at": NOW, "ip": "195.201.20.134", "city": "Nuremberg",
+                   "region": "Bavaria", "country": "DE", "org": "AS24940 Hetzner Online GmbH", "front": False}
+
+
+async def test_a_shared_front_is_named_as_one(addressed):
+    async with httpx.AsyncClient(transport=place_and_node(org="AS13335 Cloudflare, Inc.")) as http:
+        assert (await mints.located(URL, at=NOW, http=http))["front"] is True
+
+
+async def test_no_address_is_said_plainly():
+    async with httpx.AsyncClient(transport=place_and_node()) as http:
+        assert (await mints.located(URL, at=NOW, http=http))["unreachable"]
+
+
+async def test_the_node_is_the_one_its_invoice_names():
+    asked = []
+    async with httpx.AsyncClient(transport=place_and_node(asked=asked)) as http:
+        got = await mints.lightning_node(URL, at=NOW, http=http)
+    assert got["pubkey"] == NODE and got["announced"] is True
+    assert got["alias"] == "minibits.cash" and got["capacity_sats"] == 28868357 and got["channels"] == 8
+    assert got["country"] == "DE" and got["country_name"] == "Germany" and got["tor_only"] is False
+    assert got["updated_at"] == NOW - 10 * DAY
+    assert len(asked) == 1  # one unpaid quote
+    async with httpx.AsyncClient(transport=place_and_node(asked=asked)) as http:
+        await mints.lightning_node(URL, at=NOW + 3600, http=http)
+    assert len(asked) == 1  # kept for a day
+
+
+async def test_a_node_mempool_does_not_know_is_unannounced():
+    async with httpx.AsyncClient(transport=place_and_node(node_known=False)) as http:
+        got = await mints.lightning_node(URL, at=NOW, http=http)
+    assert got == {"source": "mempool.space", "observed_at": NOW, "pubkey": NODE, "announced": False}
+
+
+async def test_a_mint_that_gives_no_quote_names_no_node():
+    asked = []
+    async with httpx.AsyncClient(transport=place_and_node(quote_ok=False, asked=asked)) as http:
+        got = await mints.lightning_node(URL, at=NOW, http=http)
+    assert got["unreachable"] and len(asked) == len(mints.QUOTE_SATS)

@@ -8,7 +8,12 @@ the time it was observed:
   first seen, and how many reviews it has, with the date of the latest;
 - the Round Robin Auditor (audit.8333.space), which keeps paying Lightning
   invoices in a circle between mints: its swaps with this mint, how many
-  failed, and since when the record is clean.
+  failed, and since when the record is clean;
+- where its web server is: the address its name resolves to, and that
+  address's city, country and network, from ipinfo.io;
+- the Lightning node that moves its sats, named by an unpaid invoice it
+  issues, and what mempool.space knows of that node: alias, capacity,
+  channels, first seen, last announced, and where it is.
 
 This Operator judges nothing. A page or an agent decides what record a mint
 needs. A source that does not answer reads as ``{"unreachable": ...}``,
@@ -27,14 +32,24 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from tollbooth import cashu
+from tollbooth import bolt11, cashu
 
 CASHUMINTS = "cashumints.space"
 CASHUMINTS_API = "https://cashumints.space/api"
 AUDITOR = "audit.8333.space"
 AUDITOR_API = "https://api.audit.8333.space"
+IPINFO = "ipinfo.io"
+IPINFO_API = "https://ipinfo.io"
+MEMPOOL = "mempool.space"
+MEMPOOL_API = "https://mempool.space/api/v1/lightning/nodes"
 
 KEEP_SECONDS = 600
+#: Where a mint is, and its node, change slowly; read them once a day.
+KEEP_PLACE_SECONDS = 86_400
+#: Sats asked for in the unpaid quote that names a mint's node, smallest first.
+QUOTE_SATS = (21, 100, 1000)
+#: Networks that front many sites: the address says where the front is, not the mint.
+FRONTS = ("cloudflare", "fastly", "akamai", "cloudfront", "vercel", "netlify")
 #: Most mints one call may ask about.
 MOST_MINTS = 60
 #: How far back the auditor's record is read, and in what pages.
@@ -48,9 +63,9 @@ _DAY = 86_400
 _kept: dict[str, tuple[int, Any]] = {}
 
 
-def _fresh(key: str, at: int) -> Any:
+def _fresh(key: str, at: int, keep: int = KEEP_SECONDS) -> Any:
     kept = _kept.get(key)
-    return kept[1] if kept and at - kept[0] < KEEP_SECONDS else None
+    return kept[1] if kept and at - kept[0] < keep else None
 
 
 def _keep(key: str, at: int, value: Any) -> Any:
@@ -231,6 +246,111 @@ async def audited(url: str, *, at: int, http: httpx.AsyncClient | None = None) -
     return _keep(key, at, {"source": AUDITOR, "observed_at": at, "tracked": True, **audit_record(swaps, at=at)})
 
 
+async def _address_of(host: str) -> str:
+    """The first public IPv4 address ``host`` resolves to, or ""."""
+    import ipaddress
+    import socket
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(loop.getaddrinfo(host, 443, family=socket.AF_INET), timeout=5)
+    except (OSError, TimeoutError):
+        return ""
+    for info in infos:
+        ip = str(info[4][0])
+        if ipaddress.ip_address(ip).is_global:
+            return ip
+    return ""
+
+
+def _place(row: Any) -> dict[str, Any]:
+    """City, region, country and network out of an ipinfo.io answer."""
+    row = row if isinstance(row, dict) else {}
+    org = _short(row.get("org"), 120)
+    return {"city": _short(row.get("city"), 60), "region": _short(row.get("region"), 60),
+            "country": _short(row.get("country"), 2).upper(), "org": org,
+            "front": any(f in org.lower() for f in FRONTS)}
+
+
+async def located(url: str, *, at: int, http: httpx.AsyncClient | None = None) -> dict[str, Any]:
+    """Where the mint's web server is: its address, and that address's place and network."""
+    key = f"place:{url}"
+    if (kept := _fresh(key, at, KEEP_PLACE_SECONDS)) is not None:
+        return dict(kept)
+    from urllib.parse import urlsplit
+
+    ip = await _address_of(urlsplit(url).hostname or "")
+    if not ip:
+        return {"source": IPINFO, "observed_at": at, "unreachable": "no public address"}
+    client, own = _client(http)
+    try:
+        row = (await client.get(f"{IPINFO_API}/{ip}/json")).raise_for_status().json()
+    except (httpx.HTTPError, ValueError) as exc:
+        return _unreachable(IPINFO, exc, at)
+    finally:
+        if own:
+            await client.aclose()
+    return _keep(key, at, {"source": IPINFO, "observed_at": at, "ip": ip, **_place(row)})
+
+
+async def _payee(url: str, http: httpx.AsyncClient) -> str:
+    """The node a mint's invoices pay, from an unpaid quote; "" when the mint gives none."""
+    from coincurve import PrivateKey
+
+    client = cashu.MintClient(url, client=http)
+    nobody = PrivateKey().public_key.format().hex()  # binds the quote (NUT-20) to a key no one keeps
+    for sats in QUOTE_SATS:
+        try:
+            request = (await client.mint_quote(sats, nobody)).get("request")
+            return bolt11.decode(str(request)).payee
+        except (cashu.CashuError, bolt11.Bolt11Error, AttributeError):
+            continue
+    return ""
+
+
+def _node(row: Any) -> dict[str, Any]:
+    row = row if isinstance(row, dict) else {}
+    country = row.get("country") if isinstance(row.get("country"), dict) else {}
+    city = row.get("city") if isinstance(row.get("city"), dict) else {}
+    sockets = _short(row.get("sockets"), 600)
+    number = lambda k: int(row[k]) if str(row.get(k, "")).isdigit() else None
+    return {
+        "announced": True,
+        "alias": _short(row.get("alias"), 60),
+        "capacity_sats": number("capacity"),
+        "channels": row.get("active_channel_count") if isinstance(row.get("active_channel_count"), int) else None,
+        "first_seen": _when(row.get("first_seen")),
+        "updated_at": _when(row.get("updated_at")),
+        "country": _short(row.get("iso_code"), 2).upper(),
+        "country_name": _short(country.get("en"), 60),
+        "city": _short(city.get("en"), 60),
+        "org": _short(row.get("as_organization"), 120),
+        "tor_only": bool(sockets) and all(".onion" in s for s in sockets.split(",")),
+    }
+
+
+async def lightning_node(url: str, *, at: int, http: httpx.AsyncClient | None = None) -> dict[str, Any]:
+    """The Lightning node behind the mint, as an unpaid invoice names it, and mempool.space's record of it."""
+    key = f"node:{url}"
+    if (kept := _fresh(key, at, KEEP_PLACE_SECONDS)) is not None:
+        return dict(kept)
+    client, own = _client(http)
+    try:
+        payee = await _payee(url, client)
+        if not payee:
+            return {"source": MEMPOOL, "observed_at": at, "unreachable": "the mint named no node"}
+        found = await client.get(f"{MEMPOOL_API}/{payee}")
+        if found.status_code == 404:
+            return _keep(key, at, {"source": MEMPOOL, "observed_at": at, "pubkey": payee, "announced": False})
+        row = found.raise_for_status().json()
+    except (httpx.HTTPError, ValueError) as exc:
+        return _unreachable(MEMPOOL, exc, at)
+    finally:
+        if own:
+            await client.aclose()
+    return _keep(key, at, {"source": MEMPOOL, "observed_at": at, "pubkey": payee, **_node(row)})
+
+
 def checked_mints(urls: Any) -> list[str]:
     """Distinct public https mint addresses, at most ``MOST_MINTS``, or ``ValueError``."""
     if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
@@ -249,16 +369,17 @@ def checked_mints(urls: Any) -> list[str]:
 
 
 async def facts(urls: list[str], *, at: int | None = None, http: httpx.AsyncClient | None = None) -> list[dict[str, Any]]:
-    """Everything known about each mint, from all three sources."""
+    """Everything known about each mint, from every source."""
     at = int(time.time()) if at is None else at
     client, own = _client(http)
     gate = asyncio.Semaphore(AT_ONCE)
 
     async def one(url: str) -> dict[str, Any]:
         async with gate:
-            mint, seen, audit = await asyncio.gather(
-                own_word(url, at=at, http=client), watched(url, at=at, http=client), audited(url, at=at, http=client))
-        return {"url": url, "mint": mint, "cashumints": seen, "auditor": audit}
+            mint, seen, audit, place, node = await asyncio.gather(
+                own_word(url, at=at, http=client), watched(url, at=at, http=client), audited(url, at=at, http=client),
+                located(url, at=at, http=client), lightning_node(url, at=at, http=client))
+        return {"url": url, "mint": mint, "cashumints": seen, "auditor": audit, "located": place, "node": node}
 
     try:
         return list(await asyncio.gather(*(one(u) for u in urls)))
