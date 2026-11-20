@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.11.1] — 2026-11-20
+
+### Changed
+
+- The reputation rank settings read with their units (% or commissions) and a description a page shows: what each threshold does, and what going well means for each role.
+
 ## [0.11.0] — 2026-11-20
 
 ### Added
