@@ -1,1 +1,0 @@
-- `taskbooth_mint_facts` carries each mint's own provenance from `/v1/info` (description, pubkey, published contacts, https terms link, message) and its cashumints.space page.
