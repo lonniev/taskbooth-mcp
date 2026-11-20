@@ -330,13 +330,22 @@ PATRON_PROPERTIES: dict[str, PropertySpec] = {
 #: Where reputation ranks begin (taskbooth_reputation). Pages rank an npub's counts against these: under
 #: rank_min_finished finished is New; then Proven, Trusted and Exemplary each need their share gone well,
 #: and Trusted and Exemplary a number finished.
-RANK_THRESHOLDS: tuple[tuple[str, int, int, int, str, str], ...] = (
-    ("rank_min_finished", 3, 1, 100, "Finished before a rank", "How many finished in a role before it is ranked at all."),
-    ("rank_proven_pct", 75, 0, 100, "Proven: % gone well", "The share gone well that makes a role Proven."),
-    ("rank_trusted_pct", 90, 0, 100, "Trusted: % gone well", "The share gone well that makes a role Trusted."),
-    ("rank_trusted_finished", 10, 1, 500, "Trusted: finished", "How many finished a role needs to be Trusted."),
-    ("rank_exemplary_pct", 95, 0, 100, "Exemplary: % gone well", "The share gone well that makes a role Exemplary."),
-    ("rank_exemplary_finished", 20, 1, 1000, "Exemplary: finished", "How many finished a role needs to be Exemplary."),
+RANK_THRESHOLDS: tuple[tuple[str, int, int, int, str, str, str], ...] = (
+    ("rank_min_finished", 3, 1, 100, "Finished before a rank", "commissions",
+     ("How many commissions someone must finish in a role (client, artist, arbiter, inspector) before that role "
+      "shows a rank at all. Below it, the role reads New.")),
+    ("rank_proven_pct", 75, 0, 100, "Proven at", "%",
+     ("The share of finished commissions that went well that makes a role Proven. Going well is, for a client, "
+      "grading in time and paying; for an artist, delivering on time with no appeal lost; for an arbiter or "
+      "inspector, answering in time.")),
+    ("rank_trusted_pct", 90, 0, 100, "Trusted at", "%",
+     "The share of finished commissions that went well that makes a role Trusted, with the count below."),
+    ("rank_trusted_finished", 10, 1, 500, "Trusted after", "commissions",
+     "How many commissions a role must finish to be Trusted, with the share above."),
+    ("rank_exemplary_pct", 95, 0, 100, "Exemplary at", "%",
+     "The share of finished commissions that went well that makes a role Exemplary, with the count below."),
+    ("rank_exemplary_finished", 20, 1, 1000, "Exemplary after", "commissions",
+     "How many commissions a role must finish to be Exemplary, with the share above."),
 )
 
 #: What the owner sets for this Operator (taskbooth_set_operator_property).
@@ -347,8 +356,9 @@ OPERATOR_PROPERTIES: dict[str, PropertySpec] = {
                     "testnut.cashu.space is a test mint whose sats are not real: use it only to try escrow out.",
         suggestions=("https://testnut.cashu.space",),
     ),
-    **{name: PropertySpec(kind="number", default=default, label=label, description=about, minimum=least, maximum=most)
-       for name, default, least, most, label, about in RANK_THRESHOLDS},
+    **{name: PropertySpec(kind="number", default=default, label=label, description=about, minimum=least, maximum=most,
+                          unit=unit)
+       for name, default, least, most, label, unit, about in RANK_THRESHOLDS},
 }
 
 TOOL_REGISTRY: dict[str, ToolIdentity] = {ti.tool_id: ti for ti in _DOMAIN_TOOLS}

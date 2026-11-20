@@ -1,0 +1,1 @@
+- The reputation rank settings read with their units (% or commissions) and a description a page shows: what each threshold does, and what going well means for each role.
