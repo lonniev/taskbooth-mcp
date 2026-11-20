@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.10.1] — 2026-11-20
+
+### Added
+
+- `taskbooth_mint_facts` carries each mint's own provenance from `/v1/info` (description, pubkey, published contacts, https terms link, message) and its cashumints.space page.
+
 ## [0.10.0] — 2026-11-20
 
 ### Added
