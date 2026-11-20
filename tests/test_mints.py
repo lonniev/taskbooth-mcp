@@ -29,7 +29,10 @@ def transport(*, auditor=None, cashumints_up=True, info=None, listed=True):
         url = str(request.url)
         if url.startswith("https://mint.example/Bitcoin/v1/info"):
             return httpx.Response(200, json=info or {"name": "Example", "version": "cdk/0.18", "nuts": ESCROW,
-                                                      "icon_url": "javascript:alert(1)"})
+                                                      "icon_url": "javascript:alert(1)", "description": "A mint",
+                                                      "pubkey": "02" + "ab" * 32, "tos_url": "http://plain.example",
+                                                      "contact": [{"method": "email", "info": "a@b.example"},
+                                                                  {"method": "", "info": "x"}, "junk"]})
         if url.startswith(mints.CASHUMINTS_API):
             if not cashumints_up:
                 return httpx.Response(502)
@@ -64,7 +67,11 @@ async def test_each_source_says_its_piece_with_when_it_was_seen():
     got = await facts(auditor=swaps)
     assert got["mint"]["source"] == "mint" and got["mint"]["missing_escrow_nuts"] == []
     assert got["mint"]["icon_url"] == ""  # only an https icon is passed on
+    assert got["mint"]["description"] == "A mint" and got["mint"]["pubkey"] == "02" + "ab" * 32
+    assert got["mint"]["tos_url"] == ""  # only https
+    assert got["mint"]["contact"] == [{"method": "email", "info": "a@b.example"}]
     assert got["cashumints"] == {"source": "cashumints.space", "observed_at": NOW, "listed": True, "status": "online",
+                                 "page_url": "https://cashumints.space/mint/mint.example-bitcoin",
                                  "uptime_30d": 0.995, "first_seen": NOW - 200 * DAY, "reviews": 12,
                                  "latest_review_at": NOW - 3 * DAY, "icon_url": "https://cashumints.space/icons/x.png"}
     assert got["auditor"]["tracked"] and got["auditor"]["failed"] == 0
