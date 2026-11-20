@@ -39,7 +39,7 @@ def test_each_version_of_the_terms_is_pinned_by_its_hash():
     # This pin fails on any edit, so each edit is deliberate.
     assert terms.terms_hash("v0") == hashlib.sha256(terms.text("v0").encode()).hexdigest()
     assert terms.terms_hash("v0") == "39f1a595bfe991b897f76b51d877a5cb8e864c942ee6f181ec48c835881534dc"
-    assert terms.terms_hash("v1") == "a30dbb403d0389740c1cb0d527930cead828261fa85e4d3b6524d3d409ad0087"
+    assert terms.terms_hash("v1") == "207905d2fee013a9a3545b0e514e6c45f9d7fa9909164314baeb7ebef3afa239"
     assert terms.text() == terms.text(terms.CURRENT)
     with pytest.raises(ValueError, match="no version"):
         terms.text("v9")
@@ -224,12 +224,12 @@ async def _with_paid_deposit(db, family):
     return task
 
 
-async def test_a_performer_who_gives_the_job_back_owes_the_deposit_back(queue, family):
+async def test_a_performer_who_gives_the_job_back_keeps_the_deposit_because_payments_are_final(queue, family):
     _, db = queue
     task = await _with_paid_deposit(db, family)
     await db.act(family["child"], task, Action.RELEASE, at=NOW + 40)
     last = (await db.events(family["parent"], task))[-1]
-    assert last["deposit_owed_back"] == 500 and "deposit_kept_by_performer" not in last
+    assert last["deposit_kept_by_performer"] == 500 and "deposit_owed_back" not in last
 
 
 async def test_a_performer_who_is_released_keeps_the_deposit(queue, family):

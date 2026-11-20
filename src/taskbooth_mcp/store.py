@@ -1024,10 +1024,9 @@ class TaskStore:
                 data.pop("claimed_at", None)
                 gone = data.pop("deposit", None) or {}
                 if gone.get("paid_at"):
-                    # Paid straight to that performer's wallet; nothing here can take it back. A
-                    # performer who gives the job back owes it back (terms 14.3); one released keeps it.
-                    key = "deposit_owed_back" if npub == task["performer"] else "deposit_kept_by_performer"
-                    detail[key] = gone["sats"]
+                    # Paid straight to that performer's wallet, and a payment is final (terms 5.11):
+                    # the performer keeps it, whether they gave the job back or were released.
+                    detail["deposit_kept_by_performer"] = gone["sats"]
                 kept = sum(int(m["sats"]) for m in data.get("milestones") or [] if m.get("paid_at"))
                 if kept:
                     detail["milestones_kept_by_performer"] = kept

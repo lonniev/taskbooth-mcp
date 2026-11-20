@@ -176,9 +176,9 @@ Task Booth Standard Terms, version v1
 4.5 If the Client does not grade in time, the delivery is treated as graded at the deemed grade on the Cover Page.
 4.6 The Worker may appeal a grade once, within the appeal window on the Cover Page, counted from the grade.
 4.7 If an Arbiter is named, the Arbiter decides the appeal within the ruling time on the Cover Page.
-4.8 If no Arbiter is named, the tie-breaker the Client named decides the appeal, and that grade settles the payment for that job.
+4.8 If no Arbiter is named, the Worker may still appeal, and the Client, or a tie-breaker the Client names, decides the appeal. That decision is the Client's to make, and it settles the payment for that job.
 4.9 A grade settles payment only, and neither party gives up any other legal right by accepting it.
-4.10 The Cover Page may set late steps. Once a delivery is later than a step's hours past the delivery date, that step's percentage comes off the amount the grade awards, and the last such step applies.
+4.10 The Cover Page says what a late delivery earns, in one of four ways. It may pay the grade in full. It may take a percentage off the amount the grade awards for each day, or part of a day, past the delivery date, never below zero. It may set late steps: once a delivery is later than a step's hours past the delivery date, that step's percentage comes off the amount the grade awards, and the last such step applies. Or the job may end as missed once the delivery date passes without a delivery.
 
 5. Payment
 5.1 All amounts are in bitcoin, stated in sats. A price shown in any other currency is only an estimate.
@@ -191,6 +191,7 @@ Task Booth Standard Terms, version v1
 5.8 Each party pays its own network and routing fees.
 5.9 The Platform never receives, holds or controls the deposit, a milestone, the Balance or any escrowed funds.
 5.10 Escrowed funds are held by the Mint, under section 6.
+5.11 A payment that has reached a party is final, and is never returned. Only escrowed funds can go back to the Client, under section 6.
 
 6. Escrow
 6.1 A job is held in escrow only if its Cover Page names an Arbiter and asks for escrow. Every other job is a Lightning-only job under section 7.
@@ -199,7 +200,7 @@ Task Booth Standard Terms, version v1
 6.4 The Mint holds it as ecash locked to the Nostr keys of the Client, the Worker and the Arbiter.
 6.5 Any two of the three may release the escrow, in shares between the Worker and the Client.
 6.6 From the refund date on the Cover Page, the Client alone may take back the whole escrow.
-6.7 The refund date is the number of days on the Cover Page after the delivery date.
+6.7 The refund date is the number of days on the Cover Page after the delivery date. It always falls after the last moment an appeal or a claim of cause could still be decided: the failure point, the deemed-acceptance period, the appeal window and the ruling time, added together.
 6.8 The Worker may not mark the delivery done until the escrow is funded.
 6.9 After grading, the Worker's share is the Balance under section 5.7, and the Client's share is the rest.
 6.10 The Client and the Worker sign that split together, or the Arbiter signs it with either of them.
@@ -236,6 +237,7 @@ Task Booth Standard Terms, version v1
 9.5 Drafts and options the Client did not take stay with the Worker.
 9.6 The Worker may show the work in its portfolio, unless confidentiality is on.
 9.7 Third-party material is allowed only if the Cover Page or the Spec permits it, and its own licence applies.
+9.8 When the deliverables are assigned to the Client, the Worker waives any moral rights in them as far as the law allows, and otherwise agrees not to assert them against the Client or anyone the Client licenses or transfers them to.
 
 10. Confidentiality
 10.1 If confidentiality is on, each party keeps the other's non-public information secret and uses it only for the job.
@@ -261,13 +263,13 @@ Task Booth Standard Terms, version v1
 14. Cancellation
 14.1 Before a claim, the Client may withdraw a posting at any time, at no cost.
 14.2 After the claim and before delivery, the Client may release the Worker, and the Worker keeps the deposit and any paid milestones.
-14.3 If the Worker gives the job back before delivery, the Worker must return the deposit, and keeps any paid milestones.
+14.3 If the Worker gives the job back before delivery, the Worker keeps the deposit and any paid milestones, under section 5.11.
 14.4 After the Worker is released, the Client may post the job again, on changed terms, to another Worker.
 14.5 After delivery, the job ends only through grading.
 14.6 A job held in escrow that ends without grading is settled by a split signed under section 6.5, or by the Client taking back the escrow under section 6.6.
 14.7 If the work is still not delivered when it is later than the failure point on the Cover Page, the job ends for failure to deliver.
 14.8 Within the appeal window on the Cover Page, counted from the failure, the Worker may claim cause once, with reasons, such as the Client not supplying what section 3.3 requires. The Arbiter decides the claim within the ruling time on the Cover Page. If no Arbiter is named, no claim is made in time, or the Arbiter rejects the claim, the failure is without cause.
-14.9 After a failure without cause, payments already made stay where they are. The Platform does not move them back, and any claim to them is under section 15.
+14.9 After a failure without cause, payments already made stay where they are, under section 5.11.
 14.10 After a failure without cause, for a job held in escrow, the Arbiter signs with the Client to release the whole escrow to the Client.
 14.11 After a failure without cause, every deliverable, draft and material the Worker handed to the Client before the end becomes the Client's property, despite sections 9.1, 9.2 and 9.5.
 14.12 If the Arbiter upholds the claim of cause, the Arbiter decides how any escrow is shared, and section 9 applies as written.

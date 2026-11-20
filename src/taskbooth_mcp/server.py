@@ -768,8 +768,8 @@ async def decide_appeal(task_id: str, grade: str, reasons: str = "", npub: Patro
 async def claim_cause(task_id: str, reasons: str, npub: PatronNpub = "") -> dict[str, Any]:
     """Claim cause for a failure to deliver, once, for the arbiter to rule on (terms 14.8).
 
-    A job still undelivered at its failure point ends for failure to deliver. Within 7 days
-    you may say why, such as the client not supplying what the spec promised. Without a
+    A job still undelivered at its failure point ends for failure to deliver. Within the
+    appeal window on its cover page you may say why, such as the client not supplying what the spec promised. Without a
     claim, or without an arbiter, the failure stands without cause.
 
     Args:
