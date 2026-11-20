@@ -1,1 +1,0 @@
-- `taskbooth_mint_facts` and `taskbooth_find_mints` add two facts per mint, each read once a day: `located`, where its web server is (ipinfo.io: city, country, network, and whether it sits behind a shared front such as Cloudflare), and `node`, the Lightning node its invoices pay and mempool.space's record of it (alias, capacity, channels, first seen, last announced, country).

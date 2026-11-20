@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.11.0] — 2026-11-20
+
+### Added
+
+- `taskbooth_mint_facts` and `taskbooth_find_mints` add two facts per mint, each read once a day: `located`, where its web server is (ipinfo.io: city, country, network, and whether it sits behind a shared front such as Cloudflare), and `node`, the Lightning node its invoices pay and mempool.space's record of it (alias, capacity, channels, first seen, last announced, country).
+
 ## [0.10.1] — 2026-11-20
 
 ### Added
