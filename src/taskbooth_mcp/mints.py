@@ -85,6 +85,15 @@ def _https_or_blank(value: Any) -> str:
     return text if text.startswith("https://") else ""
 
 
+def _contacts(value: Any) -> list[dict[str, str]]:
+    """The mint's published contacts (NUT-06), as at most five ``{method, info}`` pairs of short text."""
+    out = []
+    for c in value if isinstance(value, list) else []:
+        if isinstance(c, dict) and _short(c.get("method"), 20) and _short(c.get("info"), 120):
+            out.append({"method": _short(c.get("method"), 20), "info": _short(c.get("info"), 120)})
+    return out[:5]
+
+
 async def own_word(url: str, *, at: int, http: httpx.AsyncClient | None = None) -> dict[str, Any]:
     """What the mint says of itself in ``/v1/info``."""
     key = f"own:{url}"
@@ -102,6 +111,12 @@ async def own_word(url: str, *, at: int, http: httpx.AsyncClient | None = None) 
         "icon_url": _https_or_blank(info.get("icon_url")),
         "nuts": _nuts_of(info),
         "missing_escrow_nuts": cashu.missing_escrow_nuts(info),
+        "description": _short(info.get("description"), 300),
+        "description_long": _short(info.get("description_long"), 600),
+        "motd": _short(info.get("motd"), 200),
+        "pubkey": _short(info.get("pubkey"), 66),
+        "tos_url": _https_or_blank(info.get("tos_url")),
+        "contact": _contacts(info.get("contact")),
     })
 
 
@@ -141,6 +156,7 @@ async def watched(url: str, *, at: int, http: httpx.AsyncClient | None = None) -
         "source": CASHUMINTS,
         "observed_at": at,
         "listed": True,
+        "page_url": f"https://{CASHUMINTS}/mint/{quote(str(listed['host']), safe='')}",
         "status": _short(detail.get("status"), 20),
         "uptime_30d": float(uptime) if isinstance(uptime, (int, float)) and not isinstance(uptime, bool) else None,
         "first_seen": _when(detail.get("first_seen")),

@@ -1533,7 +1533,8 @@ async def _with_tests(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def mint_facts(mints: list[str] | None = None) -> dict[str, Any]:
     """What is known about each Cashu mint, each fact with its source and the time it was observed.
 
-    - mint: what the mint's own /v1/info claims, and any escrow NUT (7, 8, 11, 12, 20) it lacks.
+    - mint: what the mint's own /v1/info claims (name, version, description, pubkey, contacts, terms
+      link, message), and any escrow NUT (7, 8, 11, 12, 20) it lacks.
     - cashumints: whether cashumints.space sees it online, its uptime over 30 days, when it was
       first seen, and its review count with the date of the latest.
     - auditor: the Round Robin Auditor's swaps with it, how many failed, and clean_since, when its
