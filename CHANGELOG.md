@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.10.0] — 2026-11-20
+
+### Added
+
+- `taskbooth_mint_facts` and `taskbooth_find_mints` (free) report what is known of a Cashu escrow mint, each fact with its source and the time it was seen: the NUTs it claims, its uptime and review count on cashumints.space, the Round Robin Auditor's record and when its clean run began, and this Operator's latest live lock test there.
+- A live lock test for the Operator (`taskbooth_mint_test_start`, `taskbooth_mint_test_sign`, `taskbooth_mint_test_list`): a few of the Operator's own sats are locked 2-of-3 at the mint with throwaway keys the page holds, and the test checks the mint refuses one signature, takes two, takes the refund key alone after the refund date, and melts the sats back to the Operator's payout address.
+
 ## [0.9.1] — 2026-11-19
 
 ### Changed
