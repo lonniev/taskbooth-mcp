@@ -1,0 +1,1 @@
+- The cover page and Project defaults no longer ask whether the client is a consumer: every party to a commission is there by choice. A `client_is_consumer` field is refused like any unknown field.

@@ -78,7 +78,6 @@ def offer_statement(task: dict[str, Any]) -> str:
         lines.append(f"IP: {_ip(cover)}")
         lines.append(f"Confidential: {_yes(cover.get('confidential'))}")
         lines.append(f"Third-party material allowed: {_yes(cover.get('third_party_allowed'))}")
-        lines.append(f"Purchaser is a consumer: {_yes(cover.get('client_is_consumer'))}")
         lines.append(f"Governing law: {_line(cover.get('governing_law') or '') or _HOME}")
         lines.append(f"Venue: {_line(cover.get('venue') or '') or _HOME}")
         if cover.get("arbiter_npub"):

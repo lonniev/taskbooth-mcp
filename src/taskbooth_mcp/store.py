@@ -203,7 +203,7 @@ def checked_late(value: Any) -> dict[str, Any]:
 #: What a cover page may say about who owns the finished work.
 IP_OPTIONS = ("assign", "license", "worker_keeps", "custom")
 _COVER_FIELDS = ("spec_url", "spec_hash", "deliverables", "deemed_grade", "deemed_acceptance_days", "ip_option",
-                 "ip_custom_text", "confidential", "client_is_consumer", "third_party_allowed", "governing_law",
+                 "ip_custom_text", "confidential", "third_party_allowed", "governing_law",
                  "venue", "arbiter_npub", "inspector_npub", "escrow", "escrow_mint", "refund_days",
                  "fail_after_hours", *WINDOWS)
 MAX_DELIVERABLES = 20
@@ -344,7 +344,6 @@ def checked_cover(value: Any, rubric: dict[str, Any], *, purchaser: str = "",
         "ip_option": ip,
         "ip_custom_text": custom if ip == "custom" else "",
         "confidential": _flag(value.get("confidential", False), "confidentiality flag"),
-        "client_is_consumer": _flag(value.get("client_is_consumer", False), "consumer flag"),
         "third_party_allowed": _flag(value.get("third_party_allowed", False), "third-party flag"),
         "governing_law": _text(value.get("governing_law", ""), "governing law", 200),
         "venue": _text(value.get("venue", ""), "venue", 200),

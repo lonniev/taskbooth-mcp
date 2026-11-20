@@ -18,7 +18,7 @@ def _task(late: dict[str, Any] | None = None, **cover: Any) -> dict[str, Any]:
         "spec_url": "https://example.com/spec.pdf", "spec_hash": "ab" * 32,
         "deliverables": ["One oil portrait", "A framed print"],
         "deemed_grade": "Good", "deemed_acceptance_days": 14,
-        "ip_option": "assign", "ip_custom_text": "", "confidential": True, "client_is_consumer": False,
+        "ip_option": "assign", "ip_custom_text": "", "confidential": True,
         "third_party_allowed": False, "governing_law": "", "venue": "",
         "fail_after_hours": 168, "appeal_hours": 168, "ruling_hours": 168, "pay_hours": 168,
         "arbiter_npub": "", "inspector_npub": "", "escrow": False, "escrow_mint": "", "refund_days": 0,
@@ -57,7 +57,6 @@ def test_every_cover_term_is_written_out_and_not_only_hashed():
         "IP: assigned to the purchaser on payment in full (terms 9.1)",
         "Confidential: yes",
         "Third-party material allowed: no",
-        "Purchaser is a consumer: no",
         "Governing law: the performer's place of residence (terms 15.3)",
         "Venue: the performer's place of residence (terms 15.3)",
     ):

@@ -28,7 +28,7 @@ OWNER = "owner"
 MEMBER = "member"
 
 #: The cover fields a Project may suggest. Deliverables, the spec and the deemed grade belong to each task.
-DEFAULT_FIELDS = ("deemed_acceptance_days", "ip_option", "ip_custom_text", "confidential", "client_is_consumer",
+DEFAULT_FIELDS = ("deemed_acceptance_days", "ip_option", "ip_custom_text", "confidential",
                   "third_party_allowed", "governing_law", "venue", "arbiter_npub")
 
 
@@ -80,7 +80,6 @@ def checked_defaults(value: Any, *, text: Any, whole: Any, flag: Any, npub: Any,
         "ip_option": ip,
         "ip_custom_text": text(value.get("ip_custom_text", ""), "custom IP terms", max_text) if ip == "custom" else "",
         "confidential": flag(value.get("confidential", False), "confidentiality flag"),
-        "client_is_consumer": flag(value.get("client_is_consumer", False), "consumer flag"),
         "third_party_allowed": flag(value.get("third_party_allowed", False), "third-party flag"),
         "governing_law": text(value.get("governing_law", ""), "governing law", 200),
         "venue": text(value.get("venue", ""), "venue", 200),
