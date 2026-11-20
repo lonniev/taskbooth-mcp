@@ -460,6 +460,10 @@ class TaskStore:
              "project_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, created_at BIGINT NOT NULL, "
              "archived INTEGER NOT NULL, data_enc TEXT NOT NULL)"),
             f"CREATE INDEX IF NOT EXISTS idx_taskbooth_projects_org ON {self._t('taskbooth_projects')}(org_id)",
+            (f"CREATE TABLE IF NOT EXISTS {self._t('taskbooth_mint_tests')} ("
+             "test_id TEXT PRIMARY KEY, mint TEXT NOT NULL, started_at BIGINT NOT NULL, "
+             "finished_at BIGINT, data_enc TEXT NOT NULL)"),
+            f"CREATE INDEX IF NOT EXISTS idx_taskbooth_mint_tests_mint ON {self._t('taskbooth_mint_tests')}(mint)",
         ):
             await self._neon._execute(sql, [])
 
@@ -1594,6 +1598,42 @@ class TaskStore:
         )
         return [{"template_id": r["template_id"], "created_at": int(r["created_at"]), **self._open(r["data_enc"])}
                 for r in rows]
+
+    # -- live tests of a mint's locks ----------------------------------------
+
+    async def save_mint_test(self, record: dict[str, Any]) -> None:
+        """Keep a test as it now stands; its proofs are locked to keys this Operator does not hold."""
+        await self._neon._execute(
+            f"INSERT INTO {self._t('taskbooth_mint_tests')} (test_id, mint, started_at, finished_at, data_enc) "
+            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (test_id) DO UPDATE SET "
+            "finished_at = EXCLUDED.finished_at, data_enc = EXCLUDED.data_enc",
+            [record["test_id"], record["mint"], int(record["started_at"]), record.get("finished_at"),
+             self._seal(record)],
+        )
+
+    async def mint_test(self, test_id: str) -> dict[str, Any]:
+        rows = await self._rows(
+            f"SELECT data_enc FROM {self._t('taskbooth_mint_tests')} WHERE test_id = $1", [str(test_id)])
+        if not rows:
+            raise ValueError("There is no mint test with that id.")
+        return self._open(rows[0]["data_enc"])
+
+    async def mint_tests(self, limit: int = 50) -> list[dict[str, Any]]:
+        """The latest tests, newest first."""
+        rows = await self._rows(
+            f"SELECT data_enc FROM {self._t('taskbooth_mint_tests')} ORDER BY started_at DESC LIMIT $1", [int(limit)])
+        return [self._open(r["data_enc"]) for r in rows]
+
+    async def finished_mint_tests(self, mints: list[str]) -> dict[str, dict[str, Any]]:
+        """Each named mint's latest finished test, from the last 500 finished."""
+        rows = await self._rows(
+            f"SELECT mint, data_enc FROM {self._t('taskbooth_mint_tests')} "
+            "WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 500", [])
+        wanted, out = set(mints), {}
+        for r in rows:
+            if r["mint"] in wanted and r["mint"] not in out:
+                out[r["mint"]] = self._open(r["data_enc"])
+        return out
 
     # -- organizations and projects -----------------------------------------
 
