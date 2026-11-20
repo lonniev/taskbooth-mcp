@@ -41,10 +41,11 @@ from tollbooth.tool_identity import (
     ToolIdentity,
 )
 
-from taskbooth_mcp import __version__, escrow, feed, payout, price, terms
+from taskbooth_mcp import __version__, escrow, feed, minttest, payout, price, terms
+from taskbooth_mcp import mints as watch
 from taskbooth_mcp.agreement import inspection_hash, inspection_statement
 from taskbooth_mcp.lifecycle import Action, State
-from taskbooth_mcp.store import NotYours, TaskStore
+from taskbooth_mcp.store import NotYours, TaskStore, new_id
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,10 @@ mcp = FastMCP(
         "taskbooth_receive_inspection_signature. The opinion is advice only; it grades "
         "nothing and holds no escrow key. taskbooth_reputation counts what any npub did on "
         "commissions as client, artist, arbiter and inspector.\n\n"
+        "taskbooth_mint_facts and taskbooth_find_mints report what is known of Cashu escrow mints: "
+        "the NUTs each claims, its uptime and reviews on cashumints.space, the Round Robin Auditor's "
+        "record, and this Operator's live lock test there. They judge nothing; the reader does. "
+        "The Operator runs a live test with taskbooth_mint_test_start and taskbooth_mint_test_sign.\n\n"
         "taskbooth_calendar_publish mints a calendar feed of your tasks for a phone's "
         "calendar app; taskbooth_calendar_list and taskbooth_calendar_revoke manage it.\n\n"
         "taskbooth_list_tasks shows every task you have a part in; taskbooth_get_task "
@@ -178,6 +183,11 @@ REQUEST_INSPECTION_SIGNATURE_UUID = "4c4551ca-d4e5-4d8d-b842-f6e4c40ec3ef"
 RECEIVE_INSPECTION_SIGNATURE_UUID = "405dcda0-e7c9-4d6d-92ff-e475acb2856d"
 REPUTATION_UUID = "035bf3fd-c12b-4bfc-91df-0f52133b8729"
 FILE_TASK_UUID = "4a56d010-554d-4aa1-83f2-2ddf0f96523c"
+MINT_FACTS_UUID = "e5851a38-f1d8-4edc-84af-a9421370af00"
+FIND_MINTS_UUID = "5bf164e8-6d76-493e-8089-aa620238519c"
+MINT_TEST_START_UUID = "a4a850c6-5461-490e-ad5f-4bbf6ac6959c"
+MINT_TEST_SIGN_UUID = "78fd8956-63a5-480d-811b-f100cc359344"
+MINT_TEST_LIST_UUID = "75e6cab5-5f1e-498c-a3a1-8231e1804022"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -297,6 +307,16 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Sign what a job's escrow is waiting for: funding it, a split, or your payout"),
     _identity(BTC_PRICE_UUID, "btc_price", "free", "Bitcoin's price", READS_REMOTE,
               "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
+    _identity(MINT_FACTS_UUID, "mint_facts", "free", "Facts about escrow mints", READS_REMOTE,
+              "What a Cashu mint, cashumints.space, the Round Robin Auditor and a live lock test say of each mint"),
+    _identity(FIND_MINTS_UUID, "find_mints", "free", "Find escrow mints", READS_REMOTE,
+              "Online Cashu mints that claim every NUT an escrow needs, each with its facts"),
+    _identity(MINT_TEST_START_UUID, "mint_test_start", "restricted", "Start a live lock test", WRITES_REMOTE,
+              "Lock a few of the Operator's own sats 2-of-3 at a mint, to see its locks and refunds work"),
+    _identity(MINT_TEST_SIGN_UUID, "mint_test_sign", "restricted", "Sign the next step of a lock test",
+              WRITES_REMOTE, "Carry a live lock test forward with its throwaway keys' signatures"),
+    _identity(MINT_TEST_LIST_UUID, "mint_test_list", "restricted", "List lock tests", READS,
+              "The Operator's live lock tests, newest first"),
 ]
 
 #: What a patron may set about themselves here (taskbooth_set_my_property).
@@ -1491,6 +1511,114 @@ async def btc_price(fiat: str = "USD", years: int = 4) -> dict[str, Any]:
         years: How many earlier years to include, 0 to 10.
     """
     return {"ok": True, **await price.reading(fiat, years)}
+
+
+# ---------------------------------------------------------------------------
+# Choosing escrow mints
+# ---------------------------------------------------------------------------
+
+
+async def _with_tests(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tested = await (await store()).finished_mint_tests([f["url"] for f in found])
+    out = []
+    for f in found:
+        record = tested.get(f["url"])
+        test = {**minttest.summary(record), "verdict": minttest.verdict(record)} if record else None
+        out.append({**f, "live_test": test})
+    return out
+
+
+@tool
+@runtime.paid_tool(MINT_FACTS_UUID)
+async def mint_facts(mints: list[str] | None = None) -> dict[str, Any]:
+    """What is known about each Cashu mint, each fact with its source and the time it was observed.
+
+    - mint: what the mint's own /v1/info claims, and any escrow NUT (7, 8, 11, 12, 20) it lacks.
+    - cashumints: whether cashumints.space sees it online, its uptime over 30 days, when it was
+      first seen, and its review count with the date of the latest.
+    - auditor: the Round Robin Auditor's swaps with it, how many failed, and clean_since, when its
+      run of good swaps began.
+    - live_test: this Operator's latest live lock test there, if any: one signature refused, two
+      taken, a refund after its date taken, and the sats returned.
+    A source that did not answer reads as unreachable, which says nothing of the mint. This
+    Operator judges nothing; you decide what record a mint needs. Facts are reused for ten minutes.
+
+    Args:
+        mints: https mint addresses, at most 60. Empty for the mints this Operator offers for escrow.
+    """
+    offered = list(await escrow_mints())
+    urls = watch.checked_mints(mints) if mints else offered
+    return {"ok": True, "offered": offered, "mints": await _with_tests(await watch.facts(urls))}
+
+
+@tool
+@runtime.paid_tool(FIND_MINTS_UUID)
+async def find_mints() -> dict[str, Any]:
+    """Online Cashu mints that cashumints.space lists as claiming every NUT an escrow needs, with their facts.
+
+    Each mint carries the same facts as taskbooth_mint_facts. Choosing among them is yours; the
+    Operator offers its own choice in the escrow_mints property.
+    """
+    urls = await watch.candidates()
+    return {"ok": True, "offered": list(await escrow_mints()), "mints": await _with_tests(await watch.facts(urls))}
+
+
+def _test_view(record: dict[str, Any]) -> dict[str, Any]:
+    return {**minttest.summary(record), "verdict": minttest.verdict(record), "sign": minttest.to_sign(record)}
+
+
+@tool
+@runtime.paid_tool(MINT_TEST_START_UUID)
+async def mint_test_start(mint: str, keys: list[str], sats: int = minttest.DEFAULT_SATS,
+                          npub: PatronNpub = "") -> dict[str, Any]:
+    """Start a live lock test at a mint, with a few of your own sats. The Operator only.
+
+    Make three throwaway keys A, B and C and keep their private halves where you sign: this
+    Operator never sees them. The answer is an invoice for sats; pay it, then sign each item in
+    sign with the key its npub names (BIP-340 over sign_digest, after rebuilding the message from
+    parts) and pass them to taskbooth_mint_test_sign. Half the sats are locked 2-of-3 with a refund
+    date a month out, half with one already past. The test then checks the mint refuses B alone,
+    takes B and C, takes A alone on the past refund date, and melts the sats back to your
+    payout_address. A mint that lacks an escrow NUT stops the test before any sats are asked for.
+
+    Args:
+        mint: The mint's https address.
+        keys: Three throwaway npubs: A, B and C.
+        sats: 20 to 1000; the mint's fees come out of them.
+    """
+    record = await minttest.start(_mint_for, mint, keys, sats, at=int(time.time()), test_id=new_id())
+    await (await store()).save_mint_test(record)
+    return {"ok": True, "test": _test_view(record)}
+
+
+@tool
+@runtime.paid_tool(MINT_TEST_SIGN_UUID)
+async def mint_test_sign(test_id: str, signatures: dict[str, str] | None = None,
+                         npub: PatronNpub = "") -> dict[str, Any]:
+    """Carry a live lock test forward with its keys' signatures, as {npub: signature}. The Operator only.
+
+    Each call takes the signatures for the items the test last listed in sign, and carries that
+    step out: funding once the invoice is paid, then the three spends. After the spends, call with
+    no signatures to ready the return of the sats to your payout_address; sign that last item and
+    call once more. Each answer lists what to sign next, or nothing once the test is finished.
+
+    Args:
+        test_id: From taskbooth_mint_test_start.
+        signatures: {npub: 128 hex characters}, one per item to sign.
+    """
+    db = await store()
+    record = await db.mint_test(str(test_id))
+    address = await payout_address_of(runtime.operator_npub())
+    record = await minttest.advance(_mint_for, _invoice_for, address, record, signatures or {}, at=int(time.time()))
+    await db.save_mint_test(record)
+    return {"ok": True, "test": _test_view(record)}
+
+
+@tool
+@runtime.paid_tool(MINT_TEST_LIST_UUID)
+async def mint_test_list(npub: PatronNpub = "") -> dict[str, Any]:
+    """Your live lock tests, newest first, each with its checks and what it waits to have signed. The Operator only."""
+    return {"ok": True, "tests": [_test_view(r) for r in await (await store()).mint_tests()]}
 
 
 if __name__ == "__main__":
