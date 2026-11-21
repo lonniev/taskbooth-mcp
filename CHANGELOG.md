@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Changes not yet released live in `changelog.d/`, one file per change — see the README there for why, and `scripts/changelog.py` for what folds them in at release time.
 
+## [0.12.0] — 2026-11-21
+
+### Added
+
+- `taskbooth_draft_task` drafts a commission or a chore from a short idea. What the person said is kept apart from what the AI proposes (grades in fiat and sats, deposit, milestones, deemed acceptance, IP) and from its questions and assumptions. A deadline the idea never mentioned is dropped, and any number it did not contain is flagged. The model and reasoning effort are Operator properties (`draft_model`, `draft_effort`); the optional `llm_api_key` credential turns drafting on.
+
 ## [0.11.1] — 2026-11-20
 
 ### Changed
