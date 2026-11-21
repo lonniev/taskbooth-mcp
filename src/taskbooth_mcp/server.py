@@ -17,18 +17,21 @@ Run locally:
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 from typing import Any
 
+import httpx
 from fastmcp import FastMCP
 from mcp.types import Icon
 from tollbooth import cashu
 from tollbooth.credential_templates import CredentialTemplate, FieldSpec
 from tollbooth.credential_validators import validate_btcpay_creds
+from tollbooth.llm_call import EFFORTS, ask
 from tollbooth.lnurl import LnurlResolutionError, resolve_lightning_address
 from tollbooth.params import PatronNpub
-from tollbooth.properties import PropertySpec
+from tollbooth.properties import PropertySpec, llm_model_property
 from tollbooth.runtime import OperatorRuntime, register_standard_tools
 from tollbooth.tool_identity import (
     CREATES,
@@ -41,7 +44,7 @@ from tollbooth.tool_identity import (
     ToolIdentity,
 )
 
-from taskbooth_mcp import __version__, escrow, feed, minttest, payout, price, terms
+from taskbooth_mcp import __version__, draft, escrow, feed, minttest, payout, price, terms
 from taskbooth_mcp import mints as watch
 from taskbooth_mcp.agreement import inspection_hash, inspection_statement
 from taskbooth_mcp.lifecycle import Action, State
@@ -117,7 +120,8 @@ mcp = FastMCP(
         "Call taskbooth_get_operator_onboarding_status to check readiness.\n"
         "1. Register with an Authority (provides a Neon database automatically)\n"
         "2. Deliver operator secrets via Secure Courier: btcpay_host, "
-        "btcpay_api_key, btcpay_store_id. Call taskbooth_request_credential_channel to start.\n\n"
+        "btcpay_api_key, btcpay_store_id; optionally llm_api_key, so taskbooth_draft_task can "
+        "draft a job from an idea. Call taskbooth_request_credential_channel to start.\n\n"
         "## Pricing\n"
         "Tool prices are set by the operator's pricing model. Use "
         "`taskbooth_check_price` to preview and `taskbooth_check_balance` to see your balance."
@@ -188,6 +192,7 @@ FIND_MINTS_UUID = "5bf164e8-6d76-493e-8089-aa620238519c"
 MINT_TEST_START_UUID = "a4a850c6-5461-490e-ad5f-4bbf6ac6959c"
 MINT_TEST_SIGN_UUID = "78fd8956-63a5-480d-811b-f100cc359344"
 MINT_TEST_LIST_UUID = "75e6cab5-5f1e-498c-a3a1-8231e1804022"
+DRAFT_TASK_UUID = "f076ae67-8f1d-4ff0-8a15-96cf8564a91f"
 
 
 def _identity(tool_id: str, capability: str, category: str, title: str, behavior: Any, intent: str) -> ToolIdentity:
@@ -305,6 +310,8 @@ _DOMAIN_TOOLS: list[ToolIdentity] = [
               "Ready your share of a job's escrow to be paid to your payout address"),
     _identity(ESCROW_SIGN_UUID, "escrow_sign", "write", "Sign for escrow", WRITES_REMOTE,
               "Sign what a job's escrow is waiting for: funding it, a split, or your payout"),
+    _identity(DRAFT_TASK_UUID, "draft_task", "write", "Draft a job from an idea", READS_REMOTE,
+              "A clean draft of a job from a short idea: what you said, proposals, and what is still open"),
     _identity(BTC_PRICE_UUID, "btc_price", "free", "Bitcoin's price", READS_REMOTE,
               "What a bitcoin costs today and on this day in earlier years, as mempool.space reports it"),
     _identity(MINT_FACTS_UUID, "mint_facts", "free", "Facts about escrow mints", READS_REMOTE,
@@ -359,6 +366,17 @@ OPERATOR_PROPERTIES: dict[str, PropertySpec] = {
     **{name: PropertySpec(kind="number", default=default, label=label, description=about, minimum=least, maximum=most,
                           unit=unit)
        for name, default, least, most, label, unit, about in RANK_THRESHOLDS},
+    "draft_model": llm_model_property(
+        "Drafting model",
+        "The model that drafts a job from a person's idea (taskbooth_draft_task). A small, cheap model is enough; "
+        "what matters is that it never invents what the person did not say.",
+        default="anthropic/claude-haiku-5.5",
+        suggestions=("anthropic/claude-haiku-5.5", "google/gemini-3.1-flash-lite", "openai/gpt-oss-20b"),
+    ),
+    "draft_effort": PropertySpec(
+        kind="choice", default="low", label="Drafting effort", choices=EFFORTS,
+        description="How long the drafting model reasons before it answers. Low was as good and far faster.",
+    ),
 }
 
 TOOL_REGISTRY: dict[str, ToolIdentity] = {ti.tool_id: ti for ti in _DOMAIN_TOOLS}
@@ -381,6 +399,13 @@ runtime = OperatorRuntime(
             "btcpay_store_id": FieldSpec(
                 required=True, sensitive=True,
                 description="Your BTCPay Store ID. Find it under Stores > Settings > General.",
+            ),
+            "llm_api_key": FieldSpec(
+                required=False, sensitive=True, lifecycle="dynamic",
+                description=(
+                    "Optional. The LLM route's API key (the fleet's OpenRouter account), so a person can "
+                    "draft a job from a short idea. Without it, jobs are written by hand."
+                ),
             ),
         },
     ),
@@ -1635,6 +1660,59 @@ async def mint_test_sign(test_id: str, signatures: dict[str, str] | None = None,
 async def mint_test_list(npub: PatronNpub = "") -> dict[str, Any]:
     """Your live lock tests, newest first, each with its checks and what it waits to have signed. The Operator only."""
     return {"ok": True, "tests": [_test_view(r) for r in await (await store()).mint_tests()]}
+
+
+# ---------------------------------------------------------------------------
+# Drafting a job from an idea
+# ---------------------------------------------------------------------------
+
+
+@tool
+@runtime.paid_tool(DRAFT_TASK_UUID)
+async def draft_task(idea: str, kind: str = "commission", currency: str = "USD",
+                     npub: PatronNpub = "") -> dict[str, Any]:
+    """A clean draft of a job from a short idea, typed in a person's own words.
+
+    The draft keeps what the person said apart from what it suggests, because it becomes
+    terms two parties sign:
+
+    - ``said``: the idea rewritten clearly. title, brief (markdown), deliverables
+      (commission), needed_by (YYYY-MM-DD, only when the idea gave a time) and
+      repeat_days (chore: 0, 1 or 7). Fill a form from these.
+    - ``proposed``: suggestions for what the idea left open. grades (name, amount in
+      ``currency``, sats, criteria, best first), and for a commission deposit_pct,
+      milestones (name, pct, after_days), deemed_days and ip_option. Offer each as a
+      proposal the person applies by choice; never fill them in silently.
+    - ``questions`` and ``assumptions``: what the person must settle before posting.
+
+    Nothing is stored, and nothing is posted: post the job with taskbooth_post_task.
+
+    Args:
+        idea: What the person needs, in their own words; up to 2,000 characters.
+        kind: "commission" (work for a professional, with a cover page) or "chore" (a job at home for a child).
+        currency: The person's currency for proposed amounts: USD, EUR, GBP, CAD, CHF, AUD or JPY.
+    """
+    text = draft.checked_idea(idea)
+    kind = draft.checked_kind(kind)
+    fiat = price.checked_fiat(currency)
+    key = (await runtime.load_credentials(["llm_api_key"])).get("llm_api_key")
+    if not key:
+        raise ValueError("This Task Booth has not set up drafting yet, so write the job by hand. No fare was charged.")
+    model = str(await runtime.operator_property("draft_model"))
+    effort = str(await runtime.operator_property("draft_effort"))
+    on = dt.datetime.now(dt.UTC).date()
+    try:
+        answer = await ask(key, system=draft.SYSTEM[kind], user=draft.user_turn(text, today=on, currency=fiat),
+                           max_tokens=draft.MAX_TOKENS, model=model, effort=effort, cache_system=True,
+                           timeout_s=draft.TIMEOUT_S, purpose="draft_task")
+    except (httpx.HTTPError, OSError) as exc:
+        raise ValueError("The AI did not answer in time. No fare was charged; try again.") from exc
+    made = draft.from_answer(answer, kind=kind, idea=text, today=on)
+    quote = await price.reading(fiat, 0)
+    draft.with_sats(made, quote["price"])
+    return {"ok": True, "kind": kind, **made.as_dict(), "currency": fiat, "price": quote["price"],
+            "price_observed_at": quote["observed_at"], "price_source": quote["source"],
+            "model": str(answer.get("model") or model)}
 
 
 if __name__ == "__main__":

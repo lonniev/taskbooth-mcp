@@ -33,9 +33,9 @@ def test_domain_tool_ids_are_unique_uuids():
 
 
 def test_operator_credentials_are_all_sensitive():
-    """BTCPay secrets must never be echoed back in a tool response."""
+    """BTCPay secrets and the LLM key must never be echoed back in a tool response."""
     fields = server.runtime._operator_credential_template.fields
-    assert set(fields) == {"btcpay_host", "btcpay_api_key", "btcpay_store_id"}
+    assert set(fields) == {"btcpay_host", "btcpay_api_key", "btcpay_store_id", "llm_api_key"}
     for name, spec in fields.items():
         assert spec.sensitive, name
 
