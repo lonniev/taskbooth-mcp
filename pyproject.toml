@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "taskbooth-mcp"
-version = "0.12.0"
+version = "0.12.1"
 description = "Task Booth — a Tollbooth DPYC Operator where work is posted with a signed rubric and paid in sats after it is graded"
 readme = "README.md"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
-    "tollbooth-dpyc[nostr]==0.128.0",
+    "tollbooth-dpyc[nostr]==0.129.0",
     # Time zone data for calendar feeds: a host image may carry none.
     "tzdata>=2025.1",
 ]
