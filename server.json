@@ -4,7 +4,7 @@
   "title": "Task Booth",
   "description": "Task Booth — work posted with a signed rubric and paid in sats after it is graded, wallet to wallet",
   "websiteUrl": "https://cafe.tollbooth-dpyc.com/products/taskbooth-mcp",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "repository": {
     "url": "https://github.com/lonniev/taskbooth-mcp",
     "source": "github"
