@@ -1,2 +1,2 @@
 cashu==0.21.0
-marshmallow<4
+marshmallow<5
